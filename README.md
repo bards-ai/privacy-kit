@@ -28,7 +28,7 @@ uv venv && uv pip install -e .
 ```python
 from privacy_kit import PiiModel
 
-model = PiiModel()
+model = PiiModel().from_pretrained("bardsai/eu-pii-anonimization-multilang")
 
 text = "Anna Wiśniewska mieszka na ul. Piękna 22, 00-549 Warszawa."
 

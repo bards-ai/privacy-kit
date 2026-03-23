@@ -18,7 +18,7 @@ def main() -> None:
     print(f"Entity class: {Entity}\n")
 
     print("Loading model…")
-    model = PiiModel()
+    model = PiiModel().from_pretrained("bardsai/eu-pii-anonimization-multilang")
     print(f"  {model!r}\n")
 
     for text in TEXTS:

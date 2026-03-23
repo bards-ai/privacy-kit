@@ -8,7 +8,6 @@ from typing import Literal
 import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-_DEFAULT_MODEL_ID = "bardsai/eu-pii-anonimization-multilang"
 _MAX_LENGTH = 512
 _CHUNK_OVERLAP_WORDS = 30
 
@@ -32,24 +31,39 @@ class PiiModel:
 
     def __init__(
         self,
-        model_id: str = _DEFAULT_MODEL_ID,
         *,
         device: str | None = None,
         max_length: int = _MAX_LENGTH,
     ) -> None:
-        self.model_id = model_id
+        self.model_id: str | None = None
         self.max_length = max_length
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+        self.tokenizer: AutoTokenizer | None = None
+        self.model: AutoModelForTokenClassification | None = None
+        self.id2label: dict[int, str] = {}
+
+    def from_pretrained(self, model_id: str) -> PiiModel:
+        """Load a HuggingFace token-classification model.
+
+        Returns *self* so you can chain: ``PiiModel().from_pretrained("bardsai/...")``.
+        """
+        self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForTokenClassification.from_pretrained(model_id).to(
             self.device
         )
         self.model.eval()
-
-        self.id2label: dict[int, str] = {
+        self.id2label = {
             int(k): v for k, v in self.model.config.id2label.items()
         }
+        return self
+
+    def _ensure_loaded(self) -> None:
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError(
+                "Model not loaded. Call .from_pretrained(model_id) first."
+            )
 
     def __repr__(self) -> str:
         return f"PiiModel(model_id={self.model_id!r}, device={self.device!r})"
@@ -60,6 +74,7 @@ class PiiModel:
 
     def extract_pii(self, text: str) -> dict[str, str]:
         """Return ``{entity_text: LABEL, ...}`` for every PII span found."""
+        self._ensure_loaded()
         entities = self._detect(text)
         return {e.text: e.label for e in entities}
 
@@ -74,6 +89,7 @@ class PiiModel:
         * ``mode="simple"`` — returns string with ``[LABEL]`` placeholders.
         * ``mode="ids"``    — returns dict with indexed placeholders and mapping.
         """
+        self._ensure_loaded()
         tokens = text.split()
         entities = self._detect(text)
 
