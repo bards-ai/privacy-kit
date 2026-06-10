@@ -1,12 +1,12 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-all check lint type test test-model fmt clean
+.PHONY: help install install-all check lint type test test-model fmt serve clean docker-build docker-run
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install the project + dev tooling (lightweight ONNX backend)
-	uv sync
+install: ## Install the project + dev tooling (ONNX backend + gateway)
+	uv sync --extra gateway
 
 install-all: ## Install with every optional extra (transformers, langfuse, langchain)
 	uv sync --all-extras
@@ -24,7 +24,17 @@ test: ## Run the test suite (model-download tests are skipped unless PII_RUN_MOD
 	uv run pytest
 
 test-model: ## Run the tests that download and exercise the real model
-	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py tests/test_model_download.py
+	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py \
+		tests/test_model_download.py tests/test_gateway_e2e.py tests/test_cli.py
+
+serve: ## Run the gateway proxy locally
+	uv run privacy-kit serve
+
+docker-build: ## Build the container image (ONNX only, model baked in)
+	docker build -t privacy-kit .
+
+docker-run: ## Serve the gateway from the container, port published to localhost only
+	docker run --rm -p 127.0.0.1:8787:8787 -v privacy-kit-data:/data privacy-kit
 
 fmt: ## Auto-format and auto-fix
 	uv run ruff format .
