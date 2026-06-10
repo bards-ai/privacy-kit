@@ -24,7 +24,7 @@ test: ## Run the test suite (model-download tests are skipped unless PII_RUN_MOD
 	uv run pytest
 
 test-model: ## Run the tests that download and exercise the real model
-	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_model_download.py
+	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py tests/test_model_download.py
 
 fmt: ## Auto-format and auto-fix
 	uv run ruff format .
