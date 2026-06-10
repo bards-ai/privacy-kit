@@ -1,6 +1,6 @@
 [project]
 name = "privacy-kit"
-version = "0.1.0"
+version = "0.2.0"
 description = "PII detection and anonymization using bardsai/eu-pii-anonimization-multilang model"
 readme = "README.md"
 license = { file = "LICENSE" }

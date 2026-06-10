@@ -79,6 +79,8 @@ The callback protects LangChain/LangGraph payloads before they are exported to L
 | Pydantic AI | Coming soon | Planned integration example |
 | OpenAI SDK | Coming soon | Planned integration example |
 
+Runnable examples live in [`examples/`](examples/). They are kept in the repository for copy-paste onboarding and are not installed as runtime package modules.
+
 ## Direct Redaction
 
 Use `Redactor` directly if you want to redact text or arbitrary JSON-like payloads.
