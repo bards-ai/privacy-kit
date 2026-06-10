@@ -1,7 +1,7 @@
 # privacy-kit
 
-PII detection and anonymization for multilingual text, powered by
-[bardsai/eu-pii-anonimization-multilang](https://huggingface.co/bardsai/eu-pii-anonimization-multilang).
+Ready-to-use privacy blocks for LLM apps and observability pipelines, powered by
+[`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang).
 
 ## Installation
 
@@ -9,51 +9,108 @@ PII detection and anonymization for multilingual text, powered by
 pip install privacy-kit
 ```
 
-Or install directly from GitHub:
+The default install uses the local ONNX backend. The model is downloaded from Hugging Face on first use and cached locally.
 
-```bash
-pip install git+https://github.com/bards-ai/privacy-kit.git
+## Langfuse
+
+```python
+from langfuse import Langfuse
+from privacy_kit.integrations.langfuse import make_mask
+
+langfuse = Langfuse(mask=make_mask())
 ```
 
-For development:
+That is the main API. `make_mask()` recursively scans every string Langfuse sends through the mask callback, including nested `input`, `output`, `metadata`, `messages`, tool calls, and custom fields.
 
-```bash
-git clone https://github.com/bards-ai/privacy-kit.git
-cd privacy-kit
-uv venv && uv pip install -e .
+Optional tuning:
+
+```python
+langfuse = Langfuse(
+    mask=make_mask(
+        include_paths=["input", "output", "metadata", "messages.*.content"],
+        exclude_paths=["metadata.trace_id", "usage"],
+    )
+)
 ```
 
-## Quick start
+By default, no path config is needed. Everything text-like is scanned.
+
+## LangChain / LangGraph
+
+```bash
+pip install 'privacy-kit[langchain]'
+```
+
+```python
+from langchain.agents import create_agent
+from privacy_kit.integrations.langchain import make_langfuse_callback
+
+langfuse_handler = make_langfuse_callback()
+agent = create_agent(model="groq:llama-3.1-8b-instant", tools=[])
+
+agent.invoke(
+    {"messages": [{"role": "user", "content": "Jan Kowalski, jan.kowalski@example.com"}]},
+    config={"callbacks": [langfuse_handler]},
+)
+```
+
+`create_agent` runs on LangGraph internally, so this is the shortest LangGraph-backed agent path.
+
+## Direct Redaction
+
+```python
+from privacy_kit import Redactor
+
+redactor = Redactor()
+redactor.redact_text("Kontakt: jan.kowalski@example.com")
+# "Kontakt: [REDACTED]"
+```
+
+For structured observability payloads:
+
+```python
+redactor.redact({
+    "input": "Jan Kowalski, jan.kowalski@example.com",
+    "metadata": {"phone": "+48 501 222 333"},
+})
+```
+
+## Supported Integrations
+
+| Framework | Status | How to use |
+| --- | --- | --- |
+| Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
+| LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
+| Pydantic AI | Coming soon | Planned example |
+| OpenAI SDK | Coming soon | Planned example |
+
+## Model Config
+
+```bash
+export PII_MODEL_ID=bardsai/eu-pii-anonimization-multilang
+export PII_MODEL_CACHE_DIR=/path/to/model-cache
+```
+
+## Transformers Backend
+
+The older `PiiModel` API is still available for label-preserving anonymization and entity extraction:
+
+```bash
+pip install 'privacy-kit[transformers]'
+```
 
 ```python
 from privacy_kit import PiiModel
 
 model = PiiModel().from_pretrained("bardsai/eu-pii-anonimization-multilang")
+model.anonymize("Anna Wiśniewska mieszka w Warszawie.")
+# "[PERSON_NAME] mieszka w [LOCATION]."
 
-text = "Anna Wiśniewska mieszka na ul. Piękna 22, 00-549 Warszawa."
-
-# Simple anonymization
-model.anonymize(text)
-# → '[PERSON_NAME] mieszka na [LOCATION].'
-
-# Anonymization with entity IDs
-model.anonymize(text, mode="ids")
-# → {'anonymized_text': '[PERSON_NAME:1] mieszka na [LOCATION:1].',
-#    'entities': {'PERSON_NAME:1': 'Anna Wiśniewska',
-#                 'LOCATION:1': 'ul. Piękna 22, 00-549 Warszawa'}}
-
-# Extract PII entities
-model.extract_pii(text)
-# → {'Anna Wiśniewska': 'PERSON_NAME',
-#    'ul. Piękna 22, 00-549 Warszawa': 'LOCATION'}
+model.extract_pii("Anna Wiśniewska mieszka w Warszawie.")
+# {"Anna Wiśniewska": "PERSON_NAME", "Warszawie": "LOCATION"}
 ```
 
-## Supported entity types
-
-The underlying model recognizes EU-relevant PII categories including:
-`PERSON_NAME`, `LOCATION`, `FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`,
-`ORGANIZATION_IDENTIFIER`, `PROPER_NAME`, `RELIGION_OR_BELIEF`,
-`TRADE_UNION_MEMBERSHIP`, and more.
+The default integration APIs use `[REDACTED]`. `PiiModel` keeps label-specific placeholders such as `[PERSON_NAME]`.
 
 ## License
 
