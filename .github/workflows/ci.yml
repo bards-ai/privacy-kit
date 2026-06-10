@@ -20,7 +20,7 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        run: uv sync --extra gateway --python ${{ matrix.python-version }}
       - name: Lint
         run: uv run ruff check . && uv run ruff format --check .
       - name: Type-check

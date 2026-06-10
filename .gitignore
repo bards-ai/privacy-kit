@@ -5,4 +5,4 @@ dist/
 build/
 *.pyc
 .ipynb_checkpoints/
-.env
+.env*.sqlite
