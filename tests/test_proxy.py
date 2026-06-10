@@ -307,6 +307,62 @@ def test_openai_responses_tool_items_are_anonymized(tmp_path: Path) -> None:
     assert "john@x.com" not in blob
 
 
+def test_claude_code_identifier_preserved_but_rest_anonymized(tmp_path: Path) -> None:
+    # Subscription/OAuth requests must reach Anthropic with the identifier intact
+    # (it's an anti-spoofing check), while user PII after it is still anonymized.
+    # The detector here DOES flag "Claude"/"Anthropic" (as the real model does),
+    # so this proves the identifier survives a detection hit.
+    store = AuditStore(tmp_path / "audit.sqlite")
+    forwarder = CapturingForwarder(lambda p: ForwardResult(200, {"content": []}, {}))
+    detector = LiteralDetector(
+        {
+            "Claude Code": "PERSON_NAME",
+            "Claude": "PERSON_NAME",
+            "Anthropic": "ORGANIZATION_NAME",
+            "John Smith": "PERSON_NAME",
+            "john@x.com": "EMAIL_ADDRESS",
+        }
+    )
+    client = TestClient(create_app(detector=detector, store=store, forwarder=forwarder))
+    identifier = "You are Claude Code, Anthropic's official CLI for Claude."
+    client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-8",
+            "system": [
+                {"type": "text", "text": identifier},
+                {"type": "text", "text": "The user is John Smith (john@x.com)."},
+            ],
+            "messages": [{"role": "user", "content": "ping John Smith"}],
+        },
+    )
+    sent = forwarder.last_payload
+    assert sent is not None
+    # First block reaches upstream byte-for-byte despite Claude/Anthropic hits.
+    assert sent["system"][0]["text"] == identifier
+    # ...but PII in the second system block and in messages is gone.
+    assert sent["system"][1]["text"] == "The user is [PERSON_NAME_1] ([EMAIL_ADDRESS_1])."
+    assert "John Smith" not in str(sent["messages"])
+
+
+def test_claude_code_identifier_as_string_system_is_preserved(tmp_path: Path) -> None:
+    client, forwarder, _ = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}))
+    identifier = "You are Claude Code, Anthropic's official CLI for Claude."
+    client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "system": f"{identifier}\n\nHelp John Smith.",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    sent = forwarder.last_payload
+    assert sent is not None
+    assert sent["system"].startswith(identifier)
+    assert "John Smith" not in sent["system"]
+    assert "[PERSON_NAME_1]" in sent["system"]
+
+
 def test_custom_source_header_is_honored(tmp_path: Path) -> None:
     client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}))
     client.post(

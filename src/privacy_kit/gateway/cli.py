@@ -81,7 +81,16 @@ def _setup_text(tool: str, base: str) -> str:
         return (
             f"# Route Claude Code through privacy-kit (run `privacy-kit serve` first):\n"
             f"export ANTHROPIC_BASE_URL={base}\n"
-            f"export ANTHROPIC_AUTH_TOKEN=<your Anthropic API key>\n"
+            f"\n"
+            f"# Subscription (Max/Pro) — no API key needed. The gateway forwards your\n"
+            f"# Claude login token and preserves the Claude Code system identifier so\n"
+            f"# Anthropic still accepts the OAuth request. If your Claude Code version\n"
+            f"# won't send the subscription token to a custom base URL, mint a\n"
+            f"# subscription-backed token once and it's picked up automatically:\n"
+            f"#   claude setup-token\n"
+            f"\n"
+            f"# Only if you authenticate with an API key instead of a subscription:\n"
+            f"#   export ANTHROPIC_AUTH_TOKEN=<your Anthropic API key>\n"
             f"\n{otel}\n"
         )
     if tool == "codex":

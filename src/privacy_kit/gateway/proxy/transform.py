@@ -47,6 +47,39 @@ def _walk_strings(value: Any, fn: TextFn) -> Any:
 
 # --- Anthropic Messages -----------------------------------------------------
 
+# Claude Code's subscription (Max/Pro OAuth) requests carry this exact string as
+# the first system block. Anthropic validates it as an anti-spoofing check and
+# rejects OAuth requests whose identifier has been altered. It must therefore
+# reach the upstream verbatim — but the detector tags "Claude Code"/"Anthropic"
+# in it as PERSON_NAME, so we explicitly preserve the identifier preamble and
+# anonymize only the text that follows it.
+CLAUDE_CODE_SYSTEM_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude."
+
+
+def _anon_preserving_identifier(text: str, fn: TextFn) -> str:
+    """Anonymize ``text`` while keeping a leading Claude Code identifier verbatim."""
+    if text.startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER):
+        rest = text[len(CLAUDE_CODE_SYSTEM_IDENTIFIER) :]
+        return CLAUDE_CODE_SYSTEM_IDENTIFIER + (fn(rest) if rest else "")
+    return fn(text)
+
+
+def _anthropic_system(system: Any, fn: TextFn) -> Any:
+    """Rewrite the Anthropic ``system`` field, preserving the Claude Code identifier.
+
+    Subscription/OAuth auth needs the identifier preamble to reach Anthropic
+    unchanged; everything after it (the user's CLAUDE.md, environment, etc.) is
+    still anonymized. ``system`` is a plain string or a list of text blocks.
+    """
+    if isinstance(system, str):
+        return _anon_preserving_identifier(system, fn)
+    if isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                block["text"] = _anon_preserving_identifier(block["text"], fn)
+        return system
+    return system
+
 
 def _anthropic_content(content: Any, fn: TextFn) -> Any:
     """Rewrite text in Anthropic content: plain text blocks AND tool blocks.
@@ -72,9 +105,10 @@ def _anthropic_content(content: Any, fn: TextFn) -> Any:
 
 
 def anthropic_request(body: dict[str, Any], anon: TextFn) -> None:
-    body["system"] = _anthropic_content(body["system"], anon) if "system" in body else None
-    if body.get("system") is None:
-        body.pop("system", None)
+    if "system" in body:
+        body["system"] = _anthropic_system(body["system"], anon)
+        if body.get("system") is None:
+            body.pop("system", None)
     for message in body.get("messages", []):
         if isinstance(message, dict) and "content" in message:
             message["content"] = _anthropic_content(message["content"], anon)
