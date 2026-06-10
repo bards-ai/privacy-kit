@@ -7,7 +7,8 @@ def test_importing_library_does_not_import_optional_dependencies() -> None:
     code = """
 import sys
 import privacy_kit
-blocked = {'fastapi', 'uvicorn', 'httpx', 'langfuse', 'langchain', 'langgraph', 'torch', 'transformers'}
+blocked = {'fastapi', 'uvicorn', 'httpx', 'langfuse', 'langchain', 'langgraph',
+           'torch', 'transformers'}
 print(','.join(sorted(blocked & set(sys.modules))))
 """
 

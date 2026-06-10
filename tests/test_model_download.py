@@ -1,10 +1,16 @@
 import os
+from pathlib import Path
 
 import pytest
 
 
-@pytest.mark.skipif(os.getenv("PII_RUN_MODEL_TESTS") != "1", reason="set PII_RUN_MODEL_TESTS=1 to download and run the model")
-def test_model_downloads_to_configured_cache_and_redacts_email(monkeypatch, tmp_path) -> None:
+@pytest.mark.skipif(
+    os.getenv("PII_RUN_MODEL_TESTS") != "1",
+    reason="set PII_RUN_MODEL_TESTS=1 to download and run the model",
+)
+def test_model_downloads_to_configured_cache_and_redacts_email(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from privacy_kit import Redactor
 
     monkeypatch.setenv("PII_MODEL_CACHE_DIR", str(tmp_path / "hf-cache"))

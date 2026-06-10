@@ -39,13 +39,16 @@ def test_redacts_langfuse_shaped_trace_payload() -> None:
     result = redactor.redact(
         {
             "input": "Jan Kowalski ma email jan.kowalski@example.com i PESEL 85010112345.",
-            "output": "Odpowiedź dla Jana Kowalskiego powinna być zapisana bez danych kontaktowych.",
+            "output": "Odpowiedź dla Jana Kowalskiego powinna być zapisana "
+            "bez danych kontaktowych.",
             "metadata": {"customer_contact": "+48 501 222 333"},
         }
     )
 
     assert result["input"] == "[REDACTED] ma email [REDACTED] i PESEL [REDACTED]."
-    assert result["output"] == "Odpowiedź dla [REDACTED] powinna być zapisana bez danych kontaktowych."
+    assert (
+        result["output"] == "Odpowiedź dla [REDACTED] powinna być zapisana bez danych kontaktowych."
+    )
     assert result["metadata"]["customer_contact"] == "[REDACTED]"
 
 

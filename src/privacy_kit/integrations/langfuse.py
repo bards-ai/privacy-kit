@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from privacy_kit.core.detectors import build_detector
 from privacy_kit.core.redactor import Redactor
@@ -17,8 +18,12 @@ def make_mask(
 ) -> Callable[[Any], Any]:
     """Return a Langfuse-compatible mask(data, **kwargs) function."""
 
-    resolved_backend = backend or os.getenv("PII_DETECTOR_BACKEND", "local")
-    resolved_threshold = threshold if threshold is not None else float(os.getenv("PII_THRESHOLD", "0.5"))
+    resolved_backend = (
+        backend if backend is not None else os.getenv("PII_DETECTOR_BACKEND", "local")
+    )
+    resolved_threshold = (
+        threshold if threshold is not None else float(os.getenv("PII_THRESHOLD", "0.5"))
+    )
     resolved_include_labels = include_labels or _labels_from_env("PII_INCLUDE_LABELS")
     resolved_exclude_labels = exclude_labels or _labels_from_env("PII_EXCLUDE_LABELS")
     resolved_include_paths = include_paths or _paths_from_env("PII_INCLUDE_PATHS")

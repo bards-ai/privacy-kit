@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Protocol
+from typing import Any, Protocol
 
 from privacy_kit.core.types import Span
 
@@ -9,12 +9,18 @@ DEFAULT_MODEL_ID = "bardsai/eu-pii-anonimization-multilang"
 
 
 class Detector(Protocol):
-    def detect(self, text: str) -> list[Span]:
-        ...
+    def detect(self, text: str) -> list[Span]: ...
 
 
 class _EncodingChunk:
-    def __init__(self, ids, attention_mask, type_ids, offsets, word_ids) -> None:
+    def __init__(
+        self,
+        ids: list[int],
+        attention_mask: list[int],
+        type_ids: list[int],
+        offsets: list[tuple[int, int]],
+        word_ids: list[int | None],
+    ) -> None:
         self.ids = ids
         self.attention_mask = attention_mask
         self.type_ids = type_ids
@@ -47,21 +53,27 @@ class BardsAiOnnxDetector:
             from tokenizers import Tokenizer
         except ImportError as exc:
             raise RuntimeError(
-                "PII redaction model dependencies are missing. Install the package with `pip install privacy-kit`."
+                "PII redaction model dependencies are missing. "
+                "Install the package with `pip install privacy-kit`."
             ) from exc
 
         resolved_model_id = model_id or os.getenv("PII_MODEL_ID", DEFAULT_MODEL_ID)
         cache_dir = os.getenv("PII_MODEL_CACHE_DIR")
 
         try:
-            tokenizer_path = hf_hub_download(resolved_model_id, "tokenizer.json", cache_dir=cache_dir)
+            tokenizer_path = hf_hub_download(
+                resolved_model_id, "tokenizer.json", cache_dir=cache_dir
+            )
             config_path = hf_hub_download(resolved_model_id, "config.json", cache_dir=cache_dir)
-            model_path = hf_hub_download(resolved_model_id, "onnx/model_quantized.onnx", cache_dir=cache_dir)
+            model_path = hf_hub_download(
+                resolved_model_id, "onnx/model_quantized.onnx", cache_dir=cache_dir
+            )
         except Exception as exc:
             cache_hint = f" using cache dir {cache_dir!r}" if cache_dir else ""
             raise RuntimeError(
                 f"Could not download or load model files for {resolved_model_id!r}{cache_hint}. "
-                "Check network access, Hugging Face availability, or set PII_MODEL_CACHE_DIR to a writable directory."
+                "Check network access, Hugging Face availability, "
+                "or set PII_MODEL_CACHE_DIR to a writable directory."
             ) from exc
 
         with open(config_path, encoding="utf-8") as file:
@@ -85,7 +97,8 @@ class BardsAiOnnxDetector:
         except Exception as exc:
             raise RuntimeError(
                 f"Could not start the local ONNX PII model from {model_path!r}. "
-                "Check that onnxruntime supports this host and that the cached model file is not corrupted."
+                "Check that onnxruntime supports this host "
+                "and that the cached model file is not corrupted."
             ) from exc
         self._input_names = {model_input.name for model_input in self._session.get_inputs()}
         self._output_name = self._session.get_outputs()[0].name
@@ -99,7 +112,7 @@ class BardsAiOnnxDetector:
             spans.extend(self._detect_encoding(encoding))
         return _dedupe_and_merge(spans)
 
-    def _chunked_encodings(self, text: str):
+    def _chunked_encodings(self, text: str) -> list[Any]:
         self._tokenizer.no_truncation()
         encoding = self._tokenizer.encode(text)
         self._tokenizer.enable_truncation(max_length=self.max_tokens, stride=self.stride)
@@ -124,11 +137,15 @@ class BardsAiOnnxDetector:
         if body_capacity <= 0 or step <= 0:
             raise ValueError("stride must leave room for non-special tokens")
 
-        chunks = []
+        chunks: list[Any] = []
         start = body_start
         while start < body_end:
             end = min(start + body_capacity, body_end)
-            token_indexes = [*range(0, prefix_count), *range(start, end), *range(body_end, len(encoding.ids))]
+            token_indexes = [
+                *range(0, prefix_count),
+                *range(start, end),
+                *range(body_end, len(encoding.ids)),
+            ]
             chunks.append(
                 _EncodingChunk(
                     ids=[encoding.ids[index] for index in token_indexes],
@@ -143,7 +160,7 @@ class BardsAiOnnxDetector:
             start += step
         return chunks
 
-    def _detect_encoding(self, encoding) -> list[Span]:
+    def _detect_encoding(self, encoding: Any) -> list[Span]:
         np = self._np
         inputs = {
             "input_ids": np.array([encoding.ids], dtype=np.int64),
@@ -167,8 +184,8 @@ class BardsAiOnnxDetector:
 
     def _bio_to_spans(
         self,
-        label_ids,
-        scores,
+        label_ids: Any,
+        scores: Any,
         offsets: list[tuple[int, int]],
         word_ids: list[int | None],
     ) -> list[Span]:
@@ -178,15 +195,23 @@ class BardsAiOnnxDetector:
         current_label: str | None = None
         current_scores: list[float] = []
 
-        for label_id, score, offset, word_id in zip(label_ids, scores, offsets, word_ids, strict=True):
+        for label_id, score, offset, word_id in zip(
+            label_ids, scores, offsets, word_ids, strict=True
+        ):
             start, end = offset
             if start == end or word_id is None:
                 continue
 
             raw_label = self.id2label[int(label_id)]
             if raw_label == "O" or float(score) < self.threshold:
-                if current_start is not None and current_label is not None and current_end is not None:
-                    spans.append(Span(current_start, current_end, current_label, min(current_scores)))
+                if (
+                    current_start is not None
+                    and current_label is not None
+                    and current_end is not None
+                ):
+                    spans.append(
+                        Span(current_start, current_end, current_label, min(current_scores))
+                    )
                 current_start = current_end = current_label = None
                 current_scores = []
                 continue
@@ -199,8 +224,14 @@ class BardsAiOnnxDetector:
                 or (current_end is not None and start > current_end + 1)
             )
             if starts_new_span:
-                if current_start is not None and current_label is not None and current_end is not None:
-                    spans.append(Span(current_start, current_end, current_label, min(current_scores)))
+                if (
+                    current_start is not None
+                    and current_label is not None
+                    and current_end is not None
+                ):
+                    spans.append(
+                        Span(current_start, current_end, current_label, min(current_scores))
+                    )
                 current_start = start
                 current_label = entity
                 current_scores = [float(score)]
@@ -232,17 +263,24 @@ def _dedupe_and_merge(spans: list[Span]) -> list[Span]:
             continue
         previous = merged[-1]
         if previous.label == span.label and span.start <= previous.end + 1:
-            merged[-1] = Span(previous.start, max(previous.end, span.end), previous.label, min(previous.score, span.score))
+            merged[-1] = Span(
+                previous.start,
+                max(previous.end, span.end),
+                previous.label,
+                min(previous.score, span.score),
+            )
             continue
         if not previous.overlaps(span):
             merged.append(span)
             continue
         if span.end > previous.end:
-            merged[-1] = Span(previous.start, span.end, previous.label, max(previous.score, span.score))
+            merged[-1] = Span(
+                previous.start, span.end, previous.label, max(previous.score, span.score)
+            )
     return merged
 
 
-def _softmax(logits):
+def _softmax(logits: Any) -> Any:
     import numpy as np
 
     shifted = logits - logits.max(axis=-1, keepdims=True)

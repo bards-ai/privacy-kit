@@ -1,3 +1,5 @@
+import pytest
+
 from privacy_kit.core.types import Span
 from privacy_kit.integrations.langfuse import make_mask
 
@@ -15,7 +17,7 @@ class PatternDetector:
         return spans
 
 
-def patch_detector(monkeypatch) -> None:
+def patch_detector(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "privacy_kit.integrations.langfuse.build_detector",
         lambda *_args, **_kwargs: PatternDetector(
@@ -28,7 +30,7 @@ def patch_detector(monkeypatch) -> None:
     )
 
 
-def test_make_mask_matches_langfuse_mask_contract(monkeypatch) -> None:
+def test_make_mask_matches_langfuse_mask_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_detector(monkeypatch)
     mask = make_mask()
 
@@ -38,7 +40,7 @@ def test_make_mask_matches_langfuse_mask_contract(monkeypatch) -> None:
     }
 
 
-def test_make_mask_reads_backend_env(monkeypatch) -> None:
+def test_make_mask_reads_backend_env(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_detector(monkeypatch)
     monkeypatch.setenv("PII_DETECTOR_BACKEND", "local")
 
@@ -47,10 +49,12 @@ def test_make_mask_reads_backend_env(monkeypatch) -> None:
     assert mask("PESEL 85010112345") == "PESEL [REDACTED]"
 
 
-def test_make_mask_can_limit_and_exclude_paths(monkeypatch) -> None:
+def test_make_mask_can_limit_and_exclude_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_detector(monkeypatch)
 
-    mask = make_mask(include_paths=["messages.*.content", "metadata"], exclude_paths=["metadata.support_contact"])
+    mask = make_mask(
+        include_paths=["messages.*.content", "metadata"], exclude_paths=["metadata.support_contact"]
+    )
 
     assert mask(
         {

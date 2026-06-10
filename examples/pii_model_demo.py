@@ -36,16 +36,16 @@ def main() -> None:
 
         # --- assertions ---
         for entity_text in pii:
-            assert entity_text == entity_text.strip(
-                ".,;:!?"
-            ), f"Entity has stray punctuation: {entity_text!r}"
+            assert entity_text == entity_text.strip(".,;:!?"), (
+                f"Entity has stray punctuation: {entity_text!r}"
+            )
 
         if pii:
             assert "[" in simple, "anonymize() should contain placeholders"
 
         if ids["entities"]:
             for key in ids["entities"]:
-                label, num = key.rsplit(":", 1)
+                _label, num = key.rsplit(":", 1)
                 assert num.isdigit(), f"ID part should be numeric: {key!r}"
 
         print("  ✓ assertions passed")

@@ -4,7 +4,6 @@ import os
 
 from privacy_kit.integrations.langfuse import make_mask
 
-
 PAYLOAD_WITH_PII = {
     "input": "Jan Kowalski, jan.kowalski@example.com, +48 501 222 333",
     "output": "Wyślemy odpowiedź do Jana Kowalskiego.",

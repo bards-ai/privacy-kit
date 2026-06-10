@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
-import re
 from typing import Any
 
 from privacy_kit.core.detectors import Detector, build_detector
@@ -48,7 +48,7 @@ class Redactor:
         chunks: list[str] = []
         cursor = 0
         for span in spans:
-            chunks.append(text[cursor:span.start])
+            chunks.append(text[cursor : span.start])
             chunks.append(self.replacement)
             cursor = span.end
         chunks.append(text[cursor:])
@@ -64,11 +64,19 @@ class Redactor:
                 return data
             return self.redact_text(data)
         if isinstance(data, Mapping):
-            return {key: self.redact(value, depth + 1, (*path, str(key))) for key, value in data.items()}
+            return {
+                key: self.redact(value, depth + 1, (*path, str(key))) for key, value in data.items()
+            }
         if isinstance(data, tuple):
-            return tuple(self.redact(value, depth + 1, (*path, str(index))) for index, value in enumerate(data))
+            return tuple(
+                self.redact(value, depth + 1, (*path, str(index)))
+                for index, value in enumerate(data)
+            )
         if isinstance(data, Sequence) and not isinstance(data, (bytes, bytearray)):
-            return [self.redact(value, depth + 1, (*path, str(index))) for index, value in enumerate(data)]
+            return [
+                self.redact(value, depth + 1, (*path, str(index)))
+                for index, value in enumerate(data)
+            ]
         serializable = _to_serializable(data)
         if serializable is not data:
             return self.redact(serializable, depth + 1, path)
@@ -122,7 +130,12 @@ def _merge_spans(spans: list[Span]) -> list[Span]:
             merged.append(span)
             continue
         previous = merged[-1]
-        merged[-1] = Span(previous.start, max(previous.end, span.end), previous.label, min(previous.score, span.score))
+        merged[-1] = Span(
+            previous.start,
+            max(previous.end, span.end),
+            previous.label,
+            min(previous.score, span.score),
+        )
     return merged
 
 
@@ -137,7 +150,10 @@ def _path_matches(pattern: PathPattern, path: DataPath) -> bool:
         return not path
     if len(pattern) > len(path):
         return False
-    return all(expected == "*" or expected == actual for expected, actual in zip(pattern, path, strict=False))
+    return all(
+        expected == "*" or expected == actual
+        for expected, actual in zip(pattern, path, strict=False)
+    )
 
 
 def _to_serializable(data: Any) -> Any:
