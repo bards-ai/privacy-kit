@@ -103,13 +103,24 @@ values).
 ```bash
 pip install 'privacy-kit[gateway]'
 
-privacy-kit serve                    # loads the model, listens on 127.0.0.1:8787
-privacy-kit setup claude-code        # prints the exact env to route Claude Code
-privacy-kit setup codex              # ... or Codex
-privacy-kit setup cursor             # ... or Cursor's chat panel
-privacy-kit report                   # summarize the audit log
-privacy-kit scan secrets.txt         # one-off detection; --anonymize to mask
+privacy-kit serve                      # loads the model, listens on 127.0.0.1:8787
+privacy-kit serve --route claude-code  # ...and auto-route Claude Code while it runs
+privacy-kit setup claude-code --apply  # route Claude Code persistently (no manual exports)
+privacy-kit setup claude-code --remove # undo the persistent routing
+privacy-kit setup codex                # print routing instructions for Codex
+privacy-kit setup cursor               # ... or Cursor's chat panel
+privacy-kit report                     # summarize the audit log
+privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 ```
+
+No manual `export` needed for Claude Code: `--apply` (or `serve --route
+claude-code`) writes `ANTHROPIC_BASE_URL` into the `env` block of
+`~/.claude/settings.json` — the CLI prints exactly which file it overrides, the
+override applies to new Claude Code sessions, and `serve --route` restores the
+previous value on shutdown (a value you changed yourself in the meantime is
+never clobbered). Works with a Claude Max/Pro subscription — no API key
+required; the gateway forwards your OAuth login token and keeps Claude Code's
+system identifier intact so Anthropic accepts the request.
 
 Supported wire formats: Anthropic Messages (`/v1/messages`,
 `/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses.

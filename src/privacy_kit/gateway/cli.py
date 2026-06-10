@@ -35,16 +35,62 @@ def version() -> None:
 def serve(
     host: str | None = typer.Option(None, help="Bind host (default from settings)"),
     port: int | None = typer.Option(None, help="Bind port (default from settings)"),
+    route_tools: list[str] = typer.Option(
+        [],
+        "--route",
+        help="Auto-route a tool through this gateway while it runs: writes the "
+        "override into the tool's own config on startup and restores it on "
+        "shutdown. Supported: claude-code.",
+    ),
 ) -> None:
     """Run the local gateway proxy. Loads the on-device model on startup."""
     import uvicorn
 
+    from privacy_kit.gateway import route
     from privacy_kit.gateway.config import get_settings
     from privacy_kit.gateway.proxy import build_default_app
 
+    unsupported = [t for t in route_tools if t != "claude-code"]
+    if unsupported:
+        typer.secho(
+            f"--route supports only claude-code for now (got: {', '.join(unsupported)}).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
     settings = get_settings()
+    bind_host = host or settings.host
+    bind_port = port or settings.port
+
+    changes: list[route.RouteChange] = []
+    if "claude-code" in route_tools:
+        base = f"http://{bind_host}:{bind_port}"
+        try:
+            change = route.apply_claude_code_route(base)
+        except ValueError as exc:
+            typer.secho(
+                f"Could not apply the Claude Code route: {exc}", fg=typer.colors.RED, err=True
+            )
+            raise typer.Exit(1) from exc
+        changes.append(change)
+        typer.secho(
+            f"Routing Claude Code through this gateway: {route.ROUTE_KEY}={base}",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo(
+            f"  Overrode {route.ROUTE_KEY} in {change.path} — new Claude Code sessions "
+            "route through the gateway; the previous value is restored when this "
+            "server shuts down."
+        )
+
     typer.echo("Loading PII model and starting the privacy-kit gateway…")
-    uvicorn.run(build_default_app(), host=host or settings.host, port=port or settings.port)
+    try:
+        uvicorn.run(build_default_app(), host=bind_host, port=bind_port)
+    finally:
+        for change in changes:
+            if route.revert_route(change):
+                typer.echo(f"Restored {route.ROUTE_KEY} in {change.path}.")
 
 
 @app.command()
@@ -52,8 +98,23 @@ def setup(
     tool: str = typer.Argument(..., help=f"One of: {', '.join(_SETUP_TOOLS)}"),
     host: str | None = typer.Option(None, help="Gateway host (default from settings)"),
     port: int | None = typer.Option(None, help="Gateway port (default from settings)"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Don't just print: write the routing into the tool's own config "
+        "(claude-code only — edits ~/.claude/settings.json).",
+    ),
+    remove: bool = typer.Option(
+        False,
+        "--remove",
+        help="Remove a previously applied routing (claude-code only).",
+    ),
+    settings_file: Path | None = typer.Option(
+        None, help="Override the tool settings file to edit (advanced/testing)."
+    ),
 ) -> None:
-    """Print how to route a tool's traffic through the gateway."""
+    """Print — or apply — the routing of a tool's traffic through the gateway."""
+    from privacy_kit.gateway import route
     from privacy_kit.gateway.config import get_settings
 
     if tool not in _SETUP_TOOLS:
@@ -63,9 +124,46 @@ def setup(
             err=True,
         )
         raise typer.Exit(1)
+    if apply and remove:
+        typer.secho("--apply and --remove are mutually exclusive.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    if (apply or remove) and tool != "claude-code":
+        typer.secho(
+            f"--apply/--remove only support claude-code for now; for {tool} use the "
+            "printed instructions below.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
 
     settings = get_settings()
     base = f"http://{host or settings.host}:{port or settings.port}"
+
+    if remove:
+        removed = route.remove_claude_code_route(settings_file)
+        path = settings_file or route.claude_settings_path()
+        if removed is None:
+            typer.echo(f"No {route.ROUTE_KEY} override found in {path}; nothing to do.")
+        else:
+            typer.secho(f"Removed {route.ROUTE_KEY}={removed} from {path}.", fg=typer.colors.GREEN)
+            typer.echo("New Claude Code sessions talk to Anthropic directly again.")
+        return
+
+    if apply:
+        try:
+            change = route.apply_claude_code_route(base, settings_file)
+        except ValueError as exc:
+            typer.secho(f"Could not edit the settings file: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+        typer.secho(f"Wrote {route.ROUTE_KEY}={base} to {change.path}.", fg=typer.colors.GREEN)
+        if change.previous is not None:
+            typer.echo(f"  (replaced previous value: {change.previous})")
+        typer.echo(
+            "New Claude Code sessions now route through the gateway — keep "
+            "`privacy-kit serve` running. Undo with: privacy-kit setup claude-code --remove"
+        )
+        return
+
     typer.echo(_setup_text(tool, base))
 
 
@@ -79,7 +177,11 @@ def _setup_text(tool: str, base: str) -> str:
     )
     if tool == "claude-code":
         return (
-            f"# Route Claude Code through privacy-kit (run `privacy-kit serve` first):\n"
+            f"# Route Claude Code through privacy-kit (run `privacy-kit serve` first).\n"
+            f"# No manual export needed — apply it automatically (edits ~/.claude/settings.json):\n"
+            f"#   privacy-kit setup claude-code --apply     # persistent (undo: --remove)\n"
+            f"#   privacy-kit serve --route claude-code     # only while the gateway runs\n"
+            f"# Or by hand:\n"
             f"export ANTHROPIC_BASE_URL={base}\n"
             f"\n"
             f"# Subscription (Max/Pro) — no API key needed. The gateway forwards your\n"

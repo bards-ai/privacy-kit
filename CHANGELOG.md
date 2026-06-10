@@ -23,6 +23,15 @@ modes (in-process blocks and a network-path gateway).
   `anonymize` / `anonymize_into` / `deanonymize`, value ↔ `[TYPE_N]` mapping
   stable within a vault. Exported from the package top level.
 - `Span.text_of()` helper; `Span` is now a frozen slots dataclass.
+- **Auto-routing for Claude Code** — no manual exports:
+  `privacy-kit setup claude-code --apply` writes `ANTHROPIC_BASE_URL` into the
+  `env` block of `~/.claude/settings.json` (undo with `--remove`), and
+  `privacy-kit serve --route claude-code` applies the override for the
+  server's lifetime and restores the previous value on shutdown. The CLI
+  always prints exactly which file it overrides; a value the user edited
+  manually in the meantime is never clobbered. Subscription (Max/Pro OAuth)
+  auth is supported — the gateway forwards the login token and preserves
+  Claude Code's system identifier verbatim.
 - Dockerfile (torch-free, model baked in at build time), Makefile, CI matrix
   on Python 3.10/3.12, ruff + mypy --strict gate, pre-commit config.
 
