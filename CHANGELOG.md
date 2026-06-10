@@ -23,6 +23,11 @@ modes (in-process blocks and a network-path gateway).
   `anonymize` / `anonymize_into` / `deanonymize`, value ↔ `[TYPE_N]` mapping
   stable within a vault. Exported from the package top level.
 - `Span.text_of()` helper; `Span` is now a frozen slots dataclass.
+- **PII preview UI** at `/ui` on the gateway: a single-file local page (no
+  external assets) with a live preview — paste text, see detected spans
+  highlighted by entity type and the pseudonymized output — plus the
+  metadata-only audit dashboard (totals by type, recent interactions). The
+  preview runs in memory only: never stored, logged, or audited.
 - **Auto-routing for Claude Code** — no manual exports:
   `privacy-kit setup claude-code --apply` writes `ANTHROPIC_BASE_URL` into the
   `env` block of `~/.claude/settings.json` (undo with `--remove`), and

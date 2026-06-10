@@ -113,6 +113,13 @@ privacy-kit report                     # summarize the audit log
 privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 ```
 
+While the gateway runs, a **PII preview UI** is served at
+`http://127.0.0.1:8787/ui`: paste any text to see detected spans highlighted by
+entity type next to the pseudonymized version that would leave your machine,
+and browse the metadata-only audit log (totals by type, recent interactions).
+The page is a single inline file — no external assets, no CDN — and the live
+preview is processed in memory only: never stored, logged, or audited.
+
 No manual `export` needed for Claude Code: `--apply` (or `serve --route
 claude-code`) writes `ANTHROPIC_BASE_URL` into the `env` block of
 `~/.claude/settings.json` — the CLI prints exactly which file it overrides, the

@@ -85,6 +85,7 @@ def serve(
         )
 
     typer.echo("Loading PII model and starting the privacy-kit gateway…")
+    typer.echo(f"PII preview UI: http://{bind_host}:{bind_port}/ui")
     try:
         uvicorn.run(build_default_app(), host=bind_host, port=bind_port)
     finally:

@@ -93,6 +93,9 @@ ignore = []
 # privacy invariant — raw text being processed must never reach stdout/stderr.
 "tests/*" = ["T20"]
 "examples/*" = ["T20"]
+# The preview UI embeds its single-file HTML/JS page as a string: markup lines
+# don't wrap at 100 chars and the UI copy legitimately uses the "×" glyph.
+"src/privacy_kit/gateway/ui.py" = ["E501", "RUF001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["privacy_kit"]

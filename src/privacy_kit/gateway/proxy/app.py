@@ -39,6 +39,7 @@ from privacy_kit.gateway.proxy.transform import (
     extract_tokens,
 )
 from privacy_kit.gateway.store import AuditStore
+from privacy_kit.gateway.ui import register_ui_routes
 
 # ``content-encoding`` is dropped because we decompress the request body here and
 # forward it re-serialized (uncompressed); leaving the header would mislabel it.
@@ -327,6 +328,7 @@ def create_app(
         return await proxy(request, "openai_responses")
 
     register_otel_routes(app, detector=detector, store=store, settings=settings)
+    register_ui_routes(app, detector=detector, store=store)
 
     return app
 
