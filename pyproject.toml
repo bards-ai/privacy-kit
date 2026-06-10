@@ -1,14 +1,14 @@
 [project]
 name = "privacy-kit"
-version = "0.2.0"
-description = "PII detection and anonymization using bardsai/eu-pii-anonimization-multilang model"
+version = "0.3.0"
+description = "Privacy blocks for LLM apps: on-device PII detection, redaction, reversible pseudonymization, and a local gateway proxy for AI tools"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
     { name = "Bards.ai" },
 ]
-keywords = ["pii", "anonymization", "privacy", "ner", "gdpr", "huggingface"]
+keywords = ["pii", "anonymization", "privacy", "ner", "gdpr", "huggingface", "llm", "proxy"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -1,14 +1,24 @@
 # privacy-kit
 
-Ready-to-use privacy blocks for LLM apps and observability pipelines, powered by
-[`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang).
+Ready-to-use privacy blocks for LLM apps, observability pipelines, and AI
+tools, powered by
+[`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang)
+— an on-device, 24-language EU-PII NER model. No text ever leaves your machine
+to be classified.
 
-The main goal is simple: add local PII redaction before prompts, responses, metadata, tool calls, and other observability payloads leave your app.
+The goal is simple: put a privacy block at every point where data crosses a
+trust boundary. There are two operations and two deployment modes:
+
+|  | You own the code (in-process) | You don't (network path) |
+| --- | --- | --- |
+| **Data is stored / observed** → redact, one-way | `Redactor`, Langfuse mask, LangChain callback | OTLP sink scrubbing telemetry |
+| **Data is in a live LLM loop** → pseudonymize, reversible | `Vault` (`anonymize` / `deanonymize`) | **Gateway** for Claude Code, Codex, Cursor |
 
 ## Install
 
 ```bash
-pip install privacy-kit
+pip install privacy-kit                # library blocks (ONNX, no torch)
+pip install 'privacy-kit[gateway]'     # + the local gateway proxy & CLI
 ```
 
 The default install uses a local ONNX backend:
@@ -70,16 +80,51 @@ agent.invoke(
 
 The callback protects LangChain/LangGraph payloads before they are exported to Langfuse. This includes nested message objects and metadata that LangChain passes through callback events.
 
-## Supported Integrations
+## The Gateway — privacy for tools you can't modify
 
-| Framework | Status | API |
-| --- | --- | --- |
-| Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
-| LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
-| Pydantic AI | Coming soon | Planned integration example |
-| OpenAI SDK | Coming soon | Planned integration example |
+Claude Code, Codex, and Cursor send your prompts (and your tools' file reads!)
+to cloud LLMs. You can't add a mask callback to them — but they all honor a
+`*_BASE_URL` override. The gateway is a local proxy that sits in that path:
 
-Runnable examples live in [`examples/`](examples/). They are kept in the repository for copy-paste onboarding and are not installed as runtime package modules.
+```
+AI tool ──> privacy-kit gateway ──> real LLM API
+            pseudonymize ──>
+                            <── rehydrate
+            audit (metadata only)
+```
+
+For every request it **pseudonymizes** PII to `[TYPE_N]` placeholders before
+the text leaves your machine, forwards the sanitized body upstream with your
+own auth, **rehydrates** the real values into the response (streaming
+included — placeholders split across SSE chunks are buffered and restored),
+and records a **metadata-only audit row** (entity types and counts — never
+values).
+
+```bash
+pip install 'privacy-kit[gateway]'
+
+privacy-kit serve                    # loads the model, listens on 127.0.0.1:8787
+privacy-kit setup claude-code        # prints the exact env to route Claude Code
+privacy-kit setup codex              # ... or Codex
+privacy-kit setup cursor             # ... or Cursor's chat panel
+privacy-kit report                   # summarize the audit log
+privacy-kit scan secrets.txt         # one-off detection; --anonymize to mask
+```
+
+Supported wire formats: Anthropic Messages (`/v1/messages`,
+`/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses.
+
+The gateway also mounts an **OTLP/HTTP JSON sink** (`/v1/logs`, `/v1/traces`,
+`/v1/metrics`): telemetry is scrubbed one-way (observability data keeps the
+placeholders), logs are audited, and scrubbed payloads can be re-exported to a
+downstream collector via `PII_OTEL_DOWNSTREAM`.
+
+Run it in Docker (model baked in at build time, no torch):
+
+```bash
+docker build -t privacy-kit .
+docker run --rm -p 127.0.0.1:8787:8787 -v privacy-kit-data:/data privacy-kit
+```
 
 ## Direct Redaction
 
@@ -110,6 +155,31 @@ redactor.redact(
 #   "metadata": {"phone": "[REDACTED]"},
 # }
 ```
+
+## Reversible Pseudonymization
+
+When the consumer of the text still needs referential consistency — and you
+need the real values back — use a `Vault` instead of redacting:
+
+```python
+from privacy_kit import Vault, anonymize, deanonymize
+
+clean, vault = anonymize(
+    "Jan Kowalski (jan.kowalski@example.com) met Jan Kowalski.",
+    detector,  # any Detector, e.g. privacy_kit.core.build_detector()
+)
+# clean == "[PERSON_NAME_1] ([EMAIL_ADDRESS_1]) met [PERSON_NAME_1]."
+#           same value -> same placeholder, every time
+
+deanonymize(clean, vault)
+# back to the original text
+
+vault.type_counts        # {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1} — safe to log
+```
+
+This is the primitive the gateway is built on: an LLM can reason about
+`[PERSON_NAME_1]` consistently across a whole conversation, and the response
+is rehydrated before the user sees it.
 
 ## Field Selection
 
@@ -149,34 +219,55 @@ export PII_EXCLUDE_PATHS="metadata.trace_id,usage"
 export PII_EXCLUDE_LABELS="ORGANIZATION_NAME"
 ```
 
-## Model Config
+## Configuration
 
-Default model:
-
-```bash
-export PII_MODEL_ID=bardsai/eu-pii-anonimization-multilang
-```
-
-Optional cache directory:
+Everything reads the same `PII_*` environment variables:
 
 ```bash
-export PII_MODEL_CACHE_DIR=/path/to/model-cache
+export PII_MODEL_ID=bardsai/eu-pii-anonimization-multilang   # default
+export PII_MODEL_CACHE_DIR=/path/to/model-cache              # optional
+export PII_THRESHOLD=0.5            # min confidence for a span to count as PII
+
+# gateway only:
+export PII_HOST=127.0.0.1
+export PII_PORT=8787
+export PII_DB_PATH=privacy_kit.sqlite
+export PII_ANTHROPIC_UPSTREAM=https://api.anthropic.com
+export PII_OPENAI_UPSTREAM=https://api.openai.com
+export PII_OTEL_DOWNSTREAM=          # optional collector for scrubbed telemetry
 ```
 
 The model is not bundled in the package. It is downloaded on first use and reused from cache after that.
 
+## Supported Integrations
+
+| Target | Status | API |
+| --- | --- | --- |
+| Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
+| LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
+| Claude Code | Ready | gateway: `privacy-kit setup claude-code` |
+| Codex | Ready | gateway: `privacy-kit setup codex` |
+| Cursor (chat panel) | Ready | gateway: `privacy-kit setup cursor` |
+| OpenTelemetry logs | Ready | gateway OTLP sink (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) |
+| Pydantic AI | Coming soon | Planned integration example |
+| OpenAI SDK | Coming soon | Planned in-process wrapper on `Vault` |
+
+Runnable examples live in [`examples/`](examples/). They are kept in the repository for copy-paste onboarding and are not installed as runtime package modules.
+
 ## What Gets Sent Where
 
-privacy-kit runs in your Python process.
+privacy-kit runs on your machine; the model runs locally in-process.
 
-For Langfuse/LangChain use cases:
+For Langfuse/LangChain (observability) use cases:
 
 1. Your app receives or creates raw LLM data.
 2. Your app may still send raw data to your chosen LLM provider.
 3. Before observability export, privacy-kit redacts the Langfuse/LangChain payload.
 4. Langfuse receives the redacted payload.
 
-The goal is to keep raw PII out of observability storage.
+For the gateway use case the guarantee is stronger: the **LLM provider itself
+never sees the raw values** — only placeholders — and the audit store keeps
+metadata only.
 
 ## Transformers Backend
 
@@ -216,15 +307,28 @@ model.extract_pii(text)
 # }
 ```
 
-Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or extracted PII mappings. The integration APIs use `[REDACTED]` by default because observability systems usually should not store the PII type either.
+Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or extracted PII mappings. The integration APIs use `[REDACTED]` by default because observability systems usually should not store the PII type either. For reversible, indexed placeholders prefer the `Vault` API above — it is idempotent and offset-exact.
 
 ## Supported Entity Types
 
 The underlying model recognizes EU-relevant PII categories including:
 
-`PERSON_NAME`, `LOCATION`, `FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`,
-`ORGANIZATION_IDENTIFIER`, `PROPER_NAME`, `RELIGION_OR_BELIEF`,
-`TRADE_UNION_MEMBERSHIP`, and more.
+`PERSON_NAME`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `LOCATION`,
+`FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`, `ORGANIZATION_IDENTIFIER`,
+`PROPER_NAME`, `RELIGION_OR_BELIEF`, `TRADE_UNION_MEMBERSHIP`, and more.
+
+## Development
+
+```bash
+make install      # uv sync with the gateway extra
+make check        # ruff + mypy --strict + pytest — must be green before commit
+make test-model   # tests that download and run the real model
+make serve        # run the gateway locally
+```
+
+A privacy invariant is enforced by lint and tests: code under `src/` must
+never print or log the text it processes (ruff T20 + the log-safety test
+suite), and the audit store schema has no place to put a raw value.
 
 ## License
 
