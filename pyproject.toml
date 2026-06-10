@@ -46,6 +46,14 @@ test = [
     "pytest>=8.2.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
 [project.urls]
 Homepage = "https://github.com/bards-ai/privacy-kit"
 Repository = "https://github.com/bards-ai/privacy-kit"
@@ -58,6 +66,51 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/privacy_kit"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF", "T20"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and runnable examples may print; in src/ the no-print rule (T20) is a
+# privacy invariant — raw text being processed must never reach stdout/stderr.
+"tests/*" = ["T20"]
+"examples/*" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["privacy_kit"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# ML libs ship incomplete/partial stubs; treat them as untyped (Any) so strict
+# mode doesn't trip on their from_pretrained() etc.
+module = [
+    "transformers.*",
+    "torch.*",
+    "onnxruntime.*",
+    "tokenizers.*",
+    "huggingface_hub.*",
+    "langfuse.*",
+    "langchain.*",
+    "langgraph.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# The Langfuse CallbackHandler base class resolves to Any (stubs skipped above);
+# subclassing it is the whole point of this integration.
+module = "privacy_kit.integrations.langchain"
+disallow_subclassing_any = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+addopts = "-q"
