@@ -3,10 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Literal
-
-import torch
-from transformers import AutoModelForTokenClassification, AutoTokenizer
+from typing import Any, Literal
 
 _MAX_LENGTH = 512
 _CHUNK_OVERLAP_WORDS = 30
@@ -37,10 +34,10 @@ class PiiModel:
     ) -> None:
         self.model_id: str | None = None
         self.max_length = max_length
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or ("cuda" if _torch_cuda_is_available() else "cpu")
 
-        self.tokenizer: AutoTokenizer | None = None
-        self.model: AutoModelForTokenClassification | None = None
+        self.tokenizer: Any | None = None
+        self.model: Any | None = None
         self.id2label: dict[int, str] = {}
 
     def from_pretrained(self, model_id: str) -> PiiModel:
@@ -48,6 +45,13 @@ class PiiModel:
 
         Returns *self* so you can chain: ``PiiModel().from_pretrained("bardsai/...")``.
         """
+        try:
+            from transformers import AutoModelForTokenClassification, AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "The transformers backend is optional. Install it with `pip install 'privacy-kit[transformers]'`."
+            ) from exc
+
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForTokenClassification.from_pretrained(model_id).to(
@@ -167,6 +171,13 @@ class PiiModel:
         )
         enc = {k: v.to(self.device) for k, v in enc.items()}
 
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError(
+                "The transformers backend is optional. Install it with `pip install 'privacy-kit[transformers]'`."
+            ) from exc
+
         with torch.no_grad():
             logits = self.model(**enc).logits
         pred_ids = logits.argmax(dim=-1)[0].cpu().tolist()
@@ -257,3 +268,11 @@ class PiiModel:
             ]
 
         return {"anonymized_text": " ".join(result), "entities": mapping}
+
+
+def _torch_cuda_is_available() -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
