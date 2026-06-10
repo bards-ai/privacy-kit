@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from privacy_kit.core import Redactor, Span
 from privacy_kit.model import Entity, PiiModel
 
 try:
@@ -9,4 +10,4 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0-dev"
 
-__all__ = ["Entity", "PiiModel", "__version__"]
+__all__ = ["Entity", "PiiModel", "Redactor", "Span", "__version__"]
