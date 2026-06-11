@@ -1,4 +1,4 @@
-# privacy-kit
+# Privacy Kit
 
 Ready-to-use privacy blocks for LLM apps and observability pipelines, powered by
 [`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang).
