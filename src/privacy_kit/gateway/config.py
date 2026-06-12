@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     user-authored text and tool/file data segments (original + anonymized)
     in plaintext."""
 
-    save_texts: Literal["anonymized", "all"] = "anonymized"
+    save_texts: Literal["anonymized", "all"] = "all"
     """Which eligible request text segments to save (original + anonymized,
     plaintext).  Only user-authored text and tool/file data are eligible; system
     prompts, instruction blocks, tool-call arguments, and assistant turns are

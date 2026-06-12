@@ -783,6 +783,58 @@ def test_anthropic_tool_result_data_is_saved(tmp_path: Path) -> None:
     assert "John Smith" not in rows[0].anonymized
 
 
+def test_anthropic_injected_system_reminder_not_saved(tmp_path: Path) -> None:
+    """Claude Code embeds <system-reminder> context in user turns; those blocks
+    are anonymized for upstream but must never be saved — only the real message."""
+    settings = Settings(_env_file=None, save_texts="all")
+    client, forwarder, store = build(
+        tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
+    )
+    reminder = "<system-reminder>\nThe user's email is john@x.com.\n</system-reminder>"
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": reminder},
+                        {"type": "text", "text": "Draft a reply to John Smith."},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    # PII inside the reminder must not leak upstream.
+    assert "john@x.com" not in str(forwarder.last_payload)
+    iid = store.recent()[0].id
+    assert iid is not None
+    originals = [r.original for r in store.texts(iid)]
+    # The injected reminder block is not saved...
+    assert all("system-reminder" not in o for o in originals)
+    assert all("john@x.com" not in o for o in originals)
+    # ...but the genuine user message is.
+    assert any("Draft a reply" in o for o in originals)
+
+
+def test_is_injected_system_text_patterns() -> None:
+    """The detector flags every harness-injection shape but not genuine messages."""
+    from privacy_kit.gateway.proxy.transform import _is_injected_system_text as inj
+
+    # Injected: tag-wrapped blocks, flattened transcripts, bracket directives.
+    assert inj("<system-reminder>\navailable tools\n</system-reminder>")
+    assert inj("<session>\nLet it check this window\n</session>")
+    assert inj("User: <local-command-stdout>Set model to claude-opus-4-8</local-command-stdout>\n")
+    assert inj("<ide_selection>some code</ide_selection>")
+    assert inj("[SUGGESTION MODE: Suggest what the user might type next]")
+    # Genuine user messages and tool/file output must NOT be flagged.
+    assert not inj("Draft a reply to john@x.com confirming their account.")
+    assert not inj("=== app.py 300-320 ===\n    return JSONResponse(...)")
+    assert not inj("")
+
+
 def test_openai_chat_system_message_not_saved(tmp_path: Path) -> None:
     """OpenAI chat system-role messages are anonymized but must not be saved."""
     settings = Settings(_env_file=None, save_texts="all")

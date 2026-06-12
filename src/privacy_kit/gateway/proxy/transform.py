@@ -37,6 +37,7 @@ Supported formats:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from enum import Enum, auto
 from typing import Any
@@ -56,6 +57,16 @@ class Author(Enum):
 def _bind(anon: AnonFn, author: Author, novel: bool) -> TextFn:
     """Return a simple ``str -> str`` that fixes ``author`` and ``novel``."""
     def fn(text: str) -> str:
+        return anon(text, author, novel)
+    return fn
+
+
+def _user_text(anon: AnonFn, novel: bool) -> TextFn:
+    """Like ``_bind(anon, Author.USER, novel)`` but downgrades harness-injected
+    system blocks (see ``_is_injected_system_text``) to MACHINE so they are
+    anonymized for upstream yet never saved."""
+    def fn(text: str) -> str:
+        author = Author.MACHINE if _is_injected_system_text(text) else Author.USER
         return anon(text, author, novel)
     return fn
 
@@ -94,6 +105,44 @@ def _walk_strings(value: Any, fn: TextFn) -> Any:
 # in it as PERSON_NAME, so we explicitly preserve the identifier preamble and
 # anonymize only the text that follows it.
 CLAUDE_CODE_SYSTEM_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude."
+
+# Some CLIs embed harness-authored context inside a *user* turn rather than the
+# system field. Claude Code wraps injected agent/skill/context info in
+# <system-reminder> tags; the user did not type these, so they must be
+# anonymized for upstream but never saved. To support a new tool, add its
+# wrapper tag here.
+# Some CLIs embed harness-authored content inside a *user* turn rather than the
+# system field: injected context blocks, slash-command output, side-channel
+# "suggestion"/title helper prompts, and flattened transcripts re-fed as input.
+# The user did not type these, so they must be anonymized for upstream but never
+# saved. The rules below are deliberately generic so a new tool rarely needs a
+# new entry; when one does, extend the matching tuple.
+#
+# Rule 1 — a block wholly wrapped in a matching XML-ish tag, e.g.
+#   <system-reminder>…</system-reminder>, <session>…</session>,
+#   <local-command-stdout>…</local-command-stdout>, <ide_selection>…</ide_selection>.
+_WRAPPED_BLOCK_RE = re.compile(r"^<([A-Za-z][\w-]*)\b[^>]*>.*</\1\s*>$", re.DOTALL)
+
+# Rule 2 — a flattened transcript: side-channel requests (title/topic/summary
+# helpers) re-send history as one block prefixed with role labels. A genuinely
+# typed message never begins with one of these.
+_TRANSCRIPT_PREFIXES: tuple[str, ...] = ("User:", "Assistant:", "Human:", "System:")
+
+# Rule 3 — a bracketed system directive that drives a helper request, e.g.
+#   "[SUGGESTION MODE: …]". Add new directive prefixes here.
+_BRACKET_DIRECTIVES: tuple[str, ...] = ("[SUGGESTION MODE:",)
+
+
+def _is_injected_system_text(text: str) -> bool:
+    """True if ``text`` is harness-injected system/helper content, not user-typed."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(_TRANSCRIPT_PREFIXES):
+        return True
+    if stripped.startswith(_BRACKET_DIRECTIVES):
+        return True
+    return bool(_WRAPPED_BLOCK_RE.match(stripped))
 
 
 def _anon_preserving_identifier(text: str, fn: TextFn) -> str:
@@ -167,7 +216,7 @@ def anthropic_request(body: dict[str, Any], anon: AnonFn) -> None:
             continue
         role = message.get("role")
         is_new = i > last_assistant
-        text_fn = _bind(anon, Author.USER if role == "user" else Author.MACHINE, is_new)
+        text_fn = _user_text(anon, is_new) if role == "user" else machine
         data_fn = _bind(anon, Author.TOOL, is_new)
         message["content"] = _anthropic_content(message["content"], text_fn, data_fn, machine)
 
@@ -195,8 +244,10 @@ def openai_chat_request(body: dict[str, Any], anon: AnonFn) -> None:
         # "user" role: plain text the human typed.
         # "tool" role: output from a tool (file contents, command results).
         # Both are savable only when they are new (not historical re-submissions).
-        if role in {"user", "tool"}:
-            text_fn = _bind(anon, Author.USER if role == "user" else Author.TOOL, is_new)
+        if role == "user":
+            text_fn = _user_text(anon, is_new)
+        elif role == "tool":
+            text_fn = _bind(anon, Author.TOOL, is_new)
         else:
             text_fn = machine
         if "content" in message:
@@ -228,7 +279,7 @@ def openai_responses_request(body: dict[str, Any], anon: AnonFn) -> None:
     inp = body.get("input")
     if isinstance(inp, str):
         # Top-level string input is the user's message (always new — no history).
-        body["input"] = anon(inp, Author.USER, True)
+        body["input"] = _user_text(anon, True)(inp)
     elif isinstance(inp, list):
         # In stateless mode Codex re-submits the full conversation history.
         # Only items after the last assistant-generated entry are new.
@@ -249,7 +300,7 @@ def openai_responses_request(body: dict[str, Any], anon: AnonFn) -> None:
                 continue
             is_new = i > last_assistant
             role = item.get("role")
-            text_fn = _bind(anon, Author.USER if role == "user" else Author.MACHINE, is_new)
+            text_fn = _user_text(anon, is_new) if role == "user" else machine
             if "content" in item:
                 item["content"] = _map_text_blocks(item["content"], text_fn)
             # function_call_output: tool return data — savable when new.
