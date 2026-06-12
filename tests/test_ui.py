@@ -108,3 +108,36 @@ def test_summary_and_recent_reflect_the_audit_store(tmp_path: Path) -> None:
     assert recent[0]["source"] == "claude-code"
     assert recent[0]["entity_counts"] == {"PERSON_NAME": 2}
     assert recent[0]["input_tokens"] == 5
+
+
+def test_texts_endpoint_returns_segments(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="claude-opus-4-8",
+        entity_counts={"PERSON_NAME": 1},
+        texts=[("hi John Smith", "hi [PERSON_NAME_1]")],
+    )
+
+    resp = client.get("/ui/api/texts")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["texts"]) == 1
+    assert data["texts"][0]["original"] == "hi John Smith"
+    assert data["texts"][0]["anonymized"] == "hi [PERSON_NAME_1]"
+
+
+def test_texts_endpoint_empty(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="claude-opus-4-8",
+        entity_counts={"PERSON_NAME": 1},
+    )
+
+    resp = client.get("/ui/api/texts")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["texts"] == []

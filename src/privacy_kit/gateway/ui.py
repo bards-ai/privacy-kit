@@ -88,6 +88,20 @@ def register_ui_routes(app: FastAPI, *, detector: Detector, store: AuditStore) -
         ]
         return JSONResponse({"interactions": rows})
 
+    @app.get("/ui/api/texts")
+    async def ui_texts(limit: int = 50) -> JSONResponse:
+        interactions = store.recent(limit=min(limit, 200))
+        all_texts = []
+        for interaction in interactions:
+            text_rows = store.texts(interaction.id)
+            for text_row in text_rows:
+                all_texts.append({
+                    "when": interaction.created_at.isoformat(timespec="seconds"),
+                    "original": text_row.original,
+                    "anonymized": text_row.anonymized,
+                })
+        return JSONResponse({"texts": all_texts})
+
 
 _PAGE = """<!doctype html>
 <html lang="en">
@@ -129,6 +143,7 @@ _PAGE = """<!doctype html>
   .err { color: #ff7b72; }
   .bar { height: 8px; border-radius: 4px; background: #2f6feb; }
   .hidden { display: none; }
+  .text-column { white-space: pre-wrap; word-break: break-word; max-width: 350px; }
 </style>
 </head>
 <body>
@@ -160,6 +175,11 @@ _PAGE = """<!doctype html>
     <div class="card"><h2>Recent interactions</h2>
       <table><thead><tr><th>When</th><th>Source</th><th>Wire</th><th>Model</th><th>Entities</th><th>Tokens in/out</th></tr></thead>
       <tbody id="recent"></tbody></table>
+    </div>
+    <div class="card"><h2>Text segments (before & after)</h2>
+      <table id="texts-table" class="hidden"><thead><tr><th>When</th><th>Original</th><th>Anonymized</th></tr></thead>
+      <tbody id="text-segments"></tbody></table>
+      <div id="texts-empty" class="muted">No text segments saved.</div>
     </div>
   </section>
 </main>
@@ -246,9 +266,10 @@ $("scan").onclick = async () => {
 // --- audit --------------------------------------------------------------
 async function loadAudit() {
   try {
-    const [summary, recent] = await Promise.all([
+    const [summary, recent, texts] = await Promise.all([
       fetch("/ui/api/summary").then((r) => r.json()),
       fetch("/ui/api/recent").then((r) => r.json()),
+      fetch("/ui/api/texts").then((r) => r.json()),
     ]);
     $("totals").textContent =
       `${summary.interactions} interaction(s), ${summary.entities_total} PII entit(ies) caught`;
@@ -287,6 +308,23 @@ async function loadAudit() {
         tr.append(td);
       }
       $("recent").append(tr);
+    }
+
+    $("text-segments").replaceChildren();
+    if (texts.texts.length === 0) {
+      show("texts-table", false);
+      show("texts-empty", true);
+    } else {
+      for (const row of texts.texts) {
+        const tr = document.createElement("tr");
+        const tdW = document.createElement("td"); tdW.textContent = row.when.replace("T", " ");
+        const tdO = document.createElement("td"); tdO.className = "text-column"; tdO.textContent = row.original;
+        const tdA = document.createElement("td"); tdA.className = "text-column"; tdA.textContent = row.anonymized;
+        tr.append(tdW, tdO, tdA);
+        $("text-segments").append(tr);
+      }
+      show("texts-table", true);
+      show("texts-empty", false);
     }
   } catch (e) {
     $("totals").textContent = String(e.message || e);
