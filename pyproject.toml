@@ -39,6 +39,9 @@ gateway = [
     "httpx>=0.27",
     "sqlmodel>=0.0.21",
     "typer>=0.12",
+    "tomlkit>=0.12",
+    "zstandard>=0.22",
+    "brotli>=1.1",
 ]
 transformers = [
     "torch>=2.0",
@@ -93,6 +96,9 @@ ignore = []
 # privacy invariant — raw text being processed must never reach stdout/stderr.
 "tests/*" = ["T20"]
 "examples/*" = ["T20"]
+# Debug/dev tooling, not shipped: the codex probe's entire job is printing
+# and capturing traffic the user explicitly asked to observe.
+"scripts/*" = ["T20"]
 # The preview UI embeds its single-file HTML/JS page as a string: markup lines
 # don't wrap at 100 chars and the UI copy legitimately uses the "×" glyph.
 "src/privacy_kit/gateway/ui.py" = ["E501", "RUF001"]

@@ -2,8 +2,31 @@
 
 Each request/response transform walks the *known* structure of a given API
 format and rewrites only the human-text fields in place, leaving everything else
-untouched. ``anon`` and ``deanon`` are ``str -> str`` callables supplied by the
-proxy (backed by a shared per-request vault).
+untouched.
+
+Request transforms receive a single ``anon`` callback with the signature::
+
+    anon(text: str, author: Author, novel: bool) -> str
+
+``Author`` classifies the segment's origin so the proxy can decide which
+segments to save in the audit store:
+
+* ``Author.USER``    — text the human typed (savable).
+* ``Author.TOOL``    — output produced by the user's local tools/files (savable).
+* ``Author.MACHINE`` — system prompts, instruction blocks, assistant turns, and
+  LLM-authored tool-call arguments (never saved).
+
+``novel`` indicates whether the segment is new on this request turn.  AI tools
+running in stateless multi-turn mode re-submit the full conversation history on
+every request; only content that appears *after* the last assistant message in
+the history is new (``novel=True``).  The proxy uses ``novel`` to avoid
+re-saving the same user text on every subsequent turn.  On the first turn (no
+assistant message yet) every segment is novel.
+
+The callback always anonymizes regardless of author/novel so upstream/model
+processing is unaffected by the save/skip classification.
+
+``deanon`` used by response transforms is a plain ``str -> str`` callable.
 
 Supported formats:
 
@@ -15,9 +38,26 @@ Supported formats:
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import Enum, auto
 from typing import Any
 
-TextFn = Callable[[str], str]
+TextFn = Callable[[str], str]  # internal helper type: simple str -> str
+AnonFn = Callable[[str, "Author", bool], str]  # public transform callback type
+
+
+class Author(Enum):
+    """Origin classification for a text segment passed to the ``anon`` callback."""
+
+    USER = auto()     # human-typed message text
+    TOOL = auto()     # tool/file output (data the user's local tools produced)
+    MACHINE = auto()  # system prompts, instructions, assistant turns, tool-call args
+
+
+def _bind(anon: AnonFn, author: Author, novel: bool) -> TextFn:
+    """Return a simple ``str -> str`` that fixes ``author`` and ``novel``."""
+    def fn(text: str) -> str:
+        return anon(text, author, novel)
+    return fn
 
 
 # --- shared helpers ---------------------------------------------------------
@@ -59,59 +99,77 @@ CLAUDE_CODE_SYSTEM_IDENTIFIER = "You are Claude Code, Anthropic's official CLI f
 def _anon_preserving_identifier(text: str, fn: TextFn) -> str:
     """Anonymize ``text`` while keeping a leading Claude Code identifier verbatim."""
     if text.startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER):
-        rest = text[len(CLAUDE_CODE_SYSTEM_IDENTIFIER) :]
+        rest = text[len(CLAUDE_CODE_SYSTEM_IDENTIFIER):]
         return CLAUDE_CODE_SYSTEM_IDENTIFIER + (fn(rest) if rest else "")
     return fn(text)
 
 
-def _anthropic_system(system: Any, fn: TextFn) -> Any:
-    """Rewrite the Anthropic ``system`` field, preserving the Claude Code identifier.
+def _anthropic_system(system: Any, machine: TextFn) -> Any:
+    """Rewrite the Anthropic ``system`` field via the machine callback (never saved).
 
     Subscription/OAuth auth needs the identifier preamble to reach Anthropic
     unchanged; everything after it (the user's CLAUDE.md, environment, etc.) is
     still anonymized. ``system`` is a plain string or a list of text blocks.
     """
     if isinstance(system, str):
-        return _anon_preserving_identifier(system, fn)
+        return _anon_preserving_identifier(system, machine)
     if isinstance(system, list):
         for block in system:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
-                block["text"] = _anon_preserving_identifier(block["text"], fn)
+                block["text"] = _anon_preserving_identifier(block["text"], machine)
         return system
     return system
 
 
-def _anthropic_content(content: Any, fn: TextFn) -> Any:
+def _anthropic_content(
+    content: Any,
+    text_fn: TextFn,
+    data_fn: TextFn,
+    machine: TextFn,
+) -> Any:
     """Rewrite text in Anthropic content: plain text blocks AND tool blocks.
 
-    Tool blocks carry user data too: ``tool_result`` content is what the
-    client's tools read off the local machine (file contents!), and re-sent
-    ``tool_use`` inputs may embed values the gateway rehydrated in an earlier
-    turn. Skipping them would leak raw PII upstream.
+    ``text_fn`` is applied to plain text (bound to USER author + is_new).
+    ``data_fn`` is applied to ``tool_result`` content (file/command data).
+    ``machine`` is applied to ``tool_use`` inputs (LLM-authored function
+    arguments — never saved).
     """
     if isinstance(content, str):
-        return fn(content)
+        return text_fn(content)
     if isinstance(content, list):
         for block in content:
             if not isinstance(block, dict):
                 continue
             if isinstance(block.get("text"), str):
-                block["text"] = fn(block["text"])
+                block["text"] = text_fn(block["text"])
             if block.get("type") == "tool_result" and "content" in block:
-                block["content"] = _anthropic_content(block["content"], fn)
+                block["content"] = _anthropic_content(block["content"], data_fn, data_fn, machine)
             elif block.get("type") == "tool_use" and "input" in block:
-                block["input"] = _walk_strings(block["input"], fn)
+                block["input"] = _walk_strings(block["input"], machine)
     return content
 
 
-def anthropic_request(body: dict[str, Any], anon: TextFn) -> None:
+def anthropic_request(body: dict[str, Any], anon: AnonFn) -> None:
+    machine = _bind(anon, Author.MACHINE, False)
     if "system" in body:
-        body["system"] = _anthropic_system(body["system"], anon)
+        body["system"] = _anthropic_system(body["system"], machine)
         if body.get("system") is None:
             body.pop("system", None)
-    for message in body.get("messages", []):
-        if isinstance(message, dict) and "content" in message:
-            message["content"] = _anthropic_content(message["content"], anon)
+    messages = body.get("messages", [])
+    # Only content from the latest user turn (after the last assistant message)
+    # is new. Earlier history has already been audited on previous requests.
+    last_assistant = max(
+        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"),
+        default=-1,
+    )
+    for i, message in enumerate(messages):
+        if not isinstance(message, dict) or "content" not in message:
+            continue
+        role = message.get("role")
+        is_new = i > last_assistant
+        text_fn = _bind(anon, Author.USER if role == "user" else Author.MACHINE, is_new)
+        data_fn = _bind(anon, Author.TOOL, is_new)
+        message["content"] = _anthropic_content(message["content"], text_fn, data_fn, machine)
 
 
 def anthropic_response(body: dict[str, Any], deanon: TextFn) -> None:
@@ -121,20 +179,33 @@ def anthropic_response(body: dict[str, Any], deanon: TextFn) -> None:
 # --- OpenAI Chat Completions ------------------------------------------------
 
 
-def openai_chat_request(body: dict[str, Any], anon: TextFn) -> None:
-    for message in body.get("messages", []):
+def openai_chat_request(body: dict[str, Any], anon: AnonFn) -> None:
+    machine = _bind(anon, Author.MACHINE, False)
+    messages = body.get("messages", [])
+    # Only content after the last assistant message is new for this turn.
+    last_assistant = max(
+        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"),
+        default=-1,
+    )
+    for i, message in enumerate(messages):
         if not isinstance(message, dict):
             continue
+        role = message.get("role")
+        is_new = i > last_assistant
+        # "user" role: plain text the human typed.
+        # "tool" role: output from a tool (file contents, command results).
+        # Both are savable only when they are new (not historical re-submissions).
+        if role in {"user", "tool"}:
+            text_fn = _bind(anon, Author.USER if role == "user" else Author.TOOL, is_new)
+        else:
+            text_fn = machine
         if "content" in message:
-            message["content"] = _map_text_blocks(message["content"], anon)
-        # Re-sent assistant turns: tool-call arguments may embed values the
-        # gateway rehydrated earlier. Placeholders contain no JSON
-        # metacharacters, so rewriting inside the serialized-JSON string keeps
-        # it valid.
+            message["content"] = _map_text_blocks(message["content"], text_fn)
+        # Tool-call arguments are LLM-authored; always machine regardless of novelty.
         for call in message.get("tool_calls") or []:
             fn_block = call.get("function") if isinstance(call, dict) else None
             if isinstance(fn_block, dict) and isinstance(fn_block.get("arguments"), str):
-                fn_block["arguments"] = anon(fn_block["arguments"])
+                fn_block["arguments"] = machine(fn_block["arguments"])
 
 
 def openai_chat_response(body: dict[str, Any], deanon: TextFn) -> None:
@@ -149,24 +220,44 @@ def openai_chat_response(body: dict[str, Any], deanon: TextFn) -> None:
 # --- OpenAI Responses -------------------------------------------------------
 
 
-def openai_responses_request(body: dict[str, Any], anon: TextFn) -> None:
+def openai_responses_request(body: dict[str, Any], anon: AnonFn) -> None:
+    machine = _bind(anon, Author.MACHINE, False)
+    # instructions = system-level prompt; not user-authored, always machine.
     if isinstance(body.get("instructions"), str):
-        body["instructions"] = anon(body["instructions"])
+        body["instructions"] = machine(body["instructions"])
     inp = body.get("input")
     if isinstance(inp, str):
-        body["input"] = anon(inp)
+        # Top-level string input is the user's message (always new — no history).
+        body["input"] = anon(inp, Author.USER, True)
     elif isinstance(inp, list):
-        for item in inp:
+        # In stateless mode Codex re-submits the full conversation history.
+        # Only items after the last assistant-generated entry are new.
+        # Both role=="assistant" messages and type=="function_call" items
+        # (LLM-generated tool invocations re-submitted as input history) mark
+        # the assistant boundary.
+        last_assistant = max(
+            (
+                i
+                for i, m in enumerate(inp)
+                if isinstance(m, dict)
+                and (m.get("role") == "assistant" or m.get("type") == "function_call")
+            ),
+            default=-1,
+        )
+        for i, item in enumerate(inp):
             if not isinstance(item, dict):
                 continue
+            is_new = i > last_assistant
+            role = item.get("role")
+            text_fn = _bind(anon, Author.USER if role == "user" else Author.MACHINE, is_new)
             if "content" in item:
-                item["content"] = _map_text_blocks(item["content"], anon)
-            # Tool outputs are what Codex's tools read off the local machine;
-            # re-sent call arguments may embed previously rehydrated values.
+                item["content"] = _map_text_blocks(item["content"], text_fn)
+            # function_call_output: tool return data — savable when new.
+            # function_call arguments: LLM-authored — always machine.
             if item.get("type") == "function_call_output" and isinstance(item.get("output"), str):
-                item["output"] = anon(item["output"])
+                item["output"] = _bind(anon, Author.TOOL, is_new)(item["output"])
             elif item.get("type") == "function_call" and isinstance(item.get("arguments"), str):
-                item["arguments"] = anon(item["arguments"])
+                item["arguments"] = machine(item["arguments"])
 
 
 def openai_responses_response(body: dict[str, Any], deanon: TextFn) -> None:
@@ -179,7 +270,7 @@ def openai_responses_response(body: dict[str, Any], deanon: TextFn) -> None:
 
 # --- registry + usage extraction --------------------------------------------
 
-REQUEST_TRANSFORMS: dict[str, Callable[[dict[str, Any], TextFn], None]] = {
+REQUEST_TRANSFORMS: dict[str, Callable[[dict[str, Any], AnonFn], None]] = {
     "anthropic": anthropic_request,
     "openai_chat": openai_chat_request,
     "openai_responses": openai_responses_request,

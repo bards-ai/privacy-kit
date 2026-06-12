@@ -120,7 +120,7 @@ def test_cli_setup_apply_and_remove(tmp_path: Path) -> None:
 
 
 def test_cli_setup_apply_rejected_for_other_tools(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["setup", "codex", "--apply"])
+    result = runner.invoke(app, ["setup", "cursor", "--apply"])
     assert result.exit_code == 1
 
 

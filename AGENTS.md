@@ -12,9 +12,12 @@
   service deps live behind extras: `[gateway]`, `[transformers]` (legacy `PiiModel`),
   `[langfuse]`, `[langchain]`.
 - Privacy invariants are enforced, not aspirational: code under `src/` never
-  prints/logs the text it processes (ruff T20 + tests/test_log_safety.py), the audit
-  store is metadata-only (tests/test_store.py dumps every DB cell to prove it), and
-  the base import pulls no optional deps (tests/test_packaging.py).
+  prints/logs the text it processes (ruff T20 + tests/test_log_safety.py), raw PII
+  lives only in the audit store's dedicated `interactiontext` table — scoped by
+  `PII_SAVE_TEXTS` and limited to user-authored text and tool/file data; it appears
+  in no other table, log, or output (tests/test_store.py and tests/test_gateway_e2e.py
+  dump every other DB cell to prove it), and the base import pulls no optional deps
+  (tests/test_packaging.py).
 - `make check` (ruff + mypy --strict + pytest) must be green before every commit.
   Tests that download the real model are gated behind `PII_RUN_MODEL_TESTS=1`
   (`make test-model`).

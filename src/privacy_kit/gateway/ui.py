@@ -8,8 +8,9 @@ Two panels:
 * **Live preview** — paste text, see every detected span highlighted by entity
   type plus the pseudonymized version. The text is processed in memory and
   returned to the caller only: nothing is persisted, logged, or audited.
-* **Audit** — the metadata-only story: totals by entity type and recent
-  interactions from the audit store (which by design holds no raw values).
+* **Audit** — totals by entity type and recent interactions from the audit
+  store. The store also keeps the request text segments selected by
+  ``PII_SAVE_TEXTS`` (original + anonymized); showing them here is a follow-up.
 """
 
 from __future__ import annotations
@@ -152,7 +153,7 @@ _PAGE = """<!doctype html>
   </section>
 
   <section id="view-audit" class="hidden">
-    <p class="muted">The audit store is metadata-only: entity types and counts — never the values themselves.</p>
+    <p class="muted">Entity types and counts per interaction. The store also saves the text segments selected by PII_SAVE_TEXTS (original + anonymized).</p>
     <div class="card"><h2>Totals</h2><div id="totals" class="muted">loading…</div>
       <table id="by-type-table" class="hidden"><thead><tr><th>Entity type</th><th>Count</th><th></th></tr></thead><tbody id="by-type"></tbody></table>
     </div>

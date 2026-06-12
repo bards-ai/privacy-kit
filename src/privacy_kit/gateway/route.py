@@ -112,3 +112,91 @@ def remove_claude_code_route(settings_path: Path | None = None) -> str | None:
         data.pop("env", None)
     _save(path, data)
     return str(removed)
+
+
+# --- Codex --------------------------------------------------------------------
+#
+# Codex reads ``~/.codex/config.toml``. The model call follows ``openai_base_url``
+# in BOTH auth modes (ChatGPT subscription and API key) — captured traffic shows
+# ``chatgpt_base_url`` governs only Codex's account/management endpoints, not the
+# model call. So routing the gateway needs exactly one key: ``openai_base_url``.
+# The gateway itself then forwards a subscription request (recognized by its
+# ``chatgpt-account-id`` header) to the ChatGPT backend. tomlkit round-trips the
+# file, so user comments and unrelated keys survive the edit.
+
+CODEX_CHATGPT_KEY = "chatgpt_base_url"
+CODEX_OPENAI_KEY = "openai_base_url"
+
+
+def codex_config_path() -> Path:
+    """Codex's user config file (read in both subscription and API-key mode)."""
+    return Path.home() / ".codex" / "config.toml"
+
+
+@dataclass(frozen=True)
+class CodexRouteChange:
+    """What was written to Codex's config, with enough context to undo it."""
+
+    path: Path
+    applied: dict[str, str]
+    previous: dict[str, str | None]  # values before; None = key was absent
+    removed: dict[str, str]  # stale gateway keys cleaned up (e.g. chatgpt_base_url)
+
+
+def apply_codex_route(base_url: str, config_path: Path | None = None) -> CodexRouteChange:
+    """Point Codex's ``openai_base_url`` at the gateway.
+
+    Writes ``openai_base_url = {base}/v1`` into Codex's ``config.toml``,
+    inserted into the document's root (never appended after a trailing
+    ``[table]``, which TOML would read as a member of that table and break
+    Codex's config load). Removes a stale ``chatgpt_base_url`` left pointing at
+    this gateway by an earlier version; a user's own custom value is left alone.
+    Comments and unrelated keys are preserved. Raises ``ValueError`` if the file
+    exists but isn't valid TOML.
+    """
+    import tomlkit
+
+    path = config_path or codex_config_path()
+    doc = tomlkit.parse(path.read_text(encoding="utf-8")) if path.exists() else tomlkit.document()
+    base = base_url.rstrip("/")
+    value = base + "/v1"
+
+    previous = {CODEX_OPENAI_KEY: str(doc[CODEX_OPENAI_KEY]) if CODEX_OPENAI_KEY in doc else None}
+
+    removed: dict[str, str] = {}
+    stale_chatgpt = base + "/"
+    if CODEX_CHATGPT_KEY in doc and str(doc[CODEX_CHATGPT_KEY]) == stale_chatgpt:
+        removed[CODEX_CHATGPT_KEY] = stale_chatgpt
+        del doc[CODEX_CHATGPT_KEY]
+
+    if CODEX_OPENAI_KEY in doc:
+        doc[CODEX_OPENAI_KEY] = value  # in place: keeps its existing position
+        text = tomlkit.dumps(doc)
+    else:
+        # New key: prepend it so it lands in the root table, above any [table].
+        quoted = tomlkit.item(value).as_string()
+        text = f"{CODEX_OPENAI_KEY} = {quoted}\n" + tomlkit.dumps(doc)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return CodexRouteChange(
+        path=path, applied={CODEX_OPENAI_KEY: value}, previous=previous, removed=removed
+    )
+
+
+def remove_codex_route(config_path: Path | None = None) -> dict[str, str]:
+    """Remove the gateway overrides outright; returns the removed key -> value map."""
+    import tomlkit
+
+    path = config_path or codex_config_path()
+    if not path.exists():
+        return {}
+    doc = tomlkit.parse(path.read_text(encoding="utf-8"))
+    removed: dict[str, str] = {}
+    for key in (CODEX_CHATGPT_KEY, CODEX_OPENAI_KEY):
+        if key in doc:
+            removed[key] = str(doc[key])
+            del doc[key]
+    if removed:
+        path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    return removed

@@ -9,6 +9,7 @@ use the same names the core library reads. Keep secrets out of source control â€
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,13 +29,25 @@ class Settings(BaseSettings):
 
     # --- Audit store ---
     db_path: Path = Path("privacy_kit.sqlite")
-    """SQLite file for the metadata-only audit log. Never stores raw PII."""
+    """SQLite file for the audit log: metadata plus, per ``save_texts``,
+    user-authored text and tool/file data segments (original + anonymized)
+    in plaintext."""
+
+    save_texts: Literal["anonymized", "all"] = "anonymized"
+    """Which eligible request text segments to save (original + anonymized,
+    plaintext).  Only user-authored text and tool/file data are eligible; system
+    prompts, instruction blocks, tool-call arguments, and assistant turns are
+    never stored regardless of this setting.  Among eligible segments:
+    "anonymized" = only those where PII was detected and replaced;
+    "all" = every eligible segment."""
 
     # --- Proxy ---
     host: str = "127.0.0.1"
     port: int = 8787
     anthropic_upstream: str = "https://api.anthropic.com"
     openai_upstream: str = "https://api.openai.com"
+    chatgpt_upstream: str = "https://chatgpt.com/backend-api"
+    """Upstream for Codex signed in with a ChatGPT account (no API key)."""
 
     # --- OTLP sink ---
     otel_downstream: str | None = None

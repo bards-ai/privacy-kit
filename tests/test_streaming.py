@@ -182,8 +182,13 @@ def test_streaming_end_to_end_through_app(tmp_path: Path) -> None:
     # Client sees the rehydrated stream, never the placeholder.
     assert "John Smith" in resp.text
     assert "[PERSON_NAME_1]" not in resp.text
-    # Audited.
+    # Audited, including the saved request text.
     assert store.summary()["interactions"] == 1
+    row = store.recent()[0]
+    assert row.id is not None
+    texts = store.texts(row.id)
+    assert texts and texts[0].original == "I'm John Smith"
+    assert texts[0].anonymized == "I'm [PERSON_NAME_1]"
 
 
 # --- hardening: usage capture + upstream error passthrough -------------------
@@ -305,8 +310,12 @@ def test_stream_request_upstream_error_passes_status_through(tmp_path: Path) -> 
     )
     assert resp.status_code == 401
     assert resp.json()["error"]["type"] == "authentication_error"
-    # The request carried PII upstream (as placeholders) -> still audited.
+    # The request carried PII upstream (as placeholders) -> still audited,
+    # texts included.
     assert store.summary()["interactions"] == 1
+    row = store.recent()[0]
+    assert row.id is not None
+    assert any(t.original == "I'm John Smith" for t in store.texts(row.id))
 
 
 def test_stream_request_non_sse_json_success_is_rehydrated(tmp_path: Path) -> None:

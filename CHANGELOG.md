@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Saved request texts**: the audit DB gains an `interactiontext` table
+  storing, per proxied request, each text segment's original and anonymized
+  form (plaintext, linked to the interaction). `PII_SAVE_TEXTS` picks the
+  scope: `anonymized` (default — only segments where PII was replaced) or
+  `all` (every segment). This is a deliberate change from the previous
+  metadata-only design: the local SQLite file now contains raw originals of
+  PII-bearing segments by default. The OTel sink and `count_tokens` remain
+  text-free; model output is never stored. Existing DB files get the new
+  table automatically on next start.
+- **Codex with a ChatGPT-account login** (free/Plus/Pro, no API key) can now be
+  routed through the gateway (experimental). Codex sends its model call to
+  `openai_base_url` in both auth modes; the gateway recognizes a subscription
+  request by its `chatgpt-account-id` header and forwards it to chatgpt.com's
+  backend (`/codex/responses`) with the login token untouched, while API-key
+  requests still go to api.openai.com. `privacy-kit setup codex --apply` /
+  `--remove` writes/clears a single `openai_base_url` in `~/.codex/config.toml`.
+- The gateway decodes `zstd`- and `brotli`-compressed request bodies (Codex
+  sends zstd streaming frames); `zstandard` + `brotli` added to the `[gateway]`
+  extra. Body-decode failures now return a 400 naming the cause.
+
+### Fixed
+
+- `setup codex --apply` inserts `openai_base_url` into the config root instead of
+  appending it after a trailing `[table]` (which TOML read as a member of that
+  table and broke Codex's config load).
+
 ## 0.3.0 — 2026-06-10
 
 The Sieve gateway merges into privacy-kit: one model, one core, two deployment

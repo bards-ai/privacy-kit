@@ -71,14 +71,26 @@ def test_claude_code_path_end_to_end(detector: BardsAiOnnxDetector, tmp_path: Pa
     # 2. The client got the real values back, exactly.
     assert resp.json()["content"][0]["text"] == f"You said: {USER_TEXT}"
 
-    # 3. Audited: metadata recorded, raw values absent from the DB file.
+    # 3. Audited: metadata recorded; raw values appear only in the texts table
+    #    (saved per PII_SAVE_TEXTS), never in any other table.
     row = store.recent()[0]
     assert row.source == "claude-code"
     assert row.entity_total >= 2
     assert (row.input_tokens, row.output_tokens) == (11, 23)
-    dump = "\n".join(sqlite3.connect(tmp_path / "audit.sqlite").iterdump())
-    for raw in RAW_PII:
-        assert raw not in dump
+    assert row.id is not None
+    saved = store.texts(row.id)
+    assert saved and saved[0].original == USER_TEXT
+    assert "[" in saved[0].anonymized and "Anna Kowalska" not in saved[0].anonymized
+    conn = sqlite3.connect(tmp_path / "audit.sqlite")
+    for (table,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if table == "interactiontext":
+            continue
+        dump = "\n".join(
+            str(cell) for r in conn.execute(f"SELECT * FROM {table}").fetchall() for cell in r
+        )
+        for raw in RAW_PII:
+            assert raw not in dump, f"raw PII {raw!r} leaked into table {table!r}"
+    conn.close()
 
 
 class EchoStreamUpstream:

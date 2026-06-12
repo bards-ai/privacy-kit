@@ -3,7 +3,9 @@
 A FastAPI app that AI tools route through via their ``*_BASE_URL`` overrides. For
 each request it anonymizes the prompt text, forwards the sanitized body to the
 real upstream (passing the client's own auth through), rehydrates the response
-with the real values, and writes a metadata-only audit row.
+with the real values, and writes an audit row (metadata plus user-authored text
+and tool/file data segments filtered by ``Settings.save_texts``; system prompts
+and other machine-authored text are anonymized upstream but never stored).
 
 Streaming (SSE) responses are de-anonymized on the fly — see ``streaming.py``.
 The upstream stream is opened before the client response is constructed, so an
@@ -36,6 +38,7 @@ from privacy_kit.gateway.proxy.streaming import PlaceholderStreamDecoder, Stream
 from privacy_kit.gateway.proxy.transform import (
     REQUEST_TRANSFORMS,
     RESPONSE_TRANSFORMS,
+    Author,
     extract_tokens,
 )
 from privacy_kit.gateway.store import AuditStore
@@ -88,17 +91,19 @@ def _decompress(raw: bytes, encoding: str) -> bytes:
             return zlib.decompress(raw, -zlib.MAX_WBITS)  # raw deflate, no zlib header
     if enc == "br":
         try:
-            import brotli  # type: ignore[import-not-found]
+            import brotli  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ValueError("brotli-encoded request body but brotli is not installed") from exc
         decompressed: bytes = brotli.decompress(raw)
         return decompressed
     if enc == "zstd":
         try:
-            import zstandard  # type: ignore[import-not-found]
+            import zstandard
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ValueError("zstd-encoded request body but zstandard is not installed") from exc
-        unzstd: bytes = zstandard.ZstdDecompressor().decompress(raw)
+        # decompressobj(), not decompress(): streaming clients (Codex) emit
+        # frames without a content-size header, which the one-shot API rejects.
+        unzstd: bytes = zstandard.ZstdDecompressor().decompressobj().decompress(raw)
         return unzstd
     raise ValueError(f"unsupported Content-Encoding: {enc!r}")
 
@@ -111,7 +116,38 @@ async def _read_json_body(request: Request) -> Any:
     compressed body; read and decode the body ourselves instead.
     """
     raw = await request.body()
-    return json.loads(_decompress(raw, request.headers.get("content-encoding", "")))
+    encoding = request.headers.get("content-encoding", "")
+    try:
+        decoded = _decompress(raw, encoding)
+    except ValueError:
+        raise  # controlled messages from _decompress; safe to surface
+    except Exception as exc:
+        # Corrupt compressed data. The library's message may quote payload
+        # bytes, so replace it rather than propagate it.
+        raise ValueError(f"could not decompress {encoding!r} request body") from exc
+    try:
+        return json.loads(decoded)
+    except UnicodeDecodeError as exc:
+        raise ValueError("request body is not valid UTF-8") from exc
+    except json.JSONDecodeError as exc:
+        # exc.msg is the bare reason ("Expecting value", …) — no payload text.
+        raise ValueError(f"invalid JSON in request body: {exc.msg}") from exc
+
+
+def _decode_error(request: Request, exc: Exception) -> JSONResponse:
+    """A 400 that says why, plus the request metadata needed to debug routing.
+
+    Goes only to the local client, which owns the original text; the reason
+    strings are controlled by ``_read_json_body`` and carry no payload bytes.
+    """
+    return JSONResponse(
+        {
+            "error": f"could not decode request body: {exc}",
+            "content_type": request.headers.get("content-type", ""),
+            "content_encoding": request.headers.get("content-encoding", ""),
+        },
+        status_code=400,
+    )
 
 
 @dataclass
@@ -189,6 +225,25 @@ def _upstream_base(wire: str, settings: Settings) -> str:
     return base.rstrip("/")
 
 
+# Codex signed in with a ChatGPT account sends this header on every request; an
+# API-key session never does. It is how we tell a subscription model call (which
+# must reach chatgpt.com's backend) from an API-key one (api.openai.com).
+_CHATGPT_ACCOUNT_HEADER = "chatgpt-account-id"
+
+
+def _responses_route(request: Request, settings: Settings) -> tuple[str | None, str | None]:
+    """Pick (upstream, path) for an OpenAI Responses request by auth signal.
+
+    A ChatGPT-subscription Codex call carries ``chatgpt-account-id`` and must go
+    to the ChatGPT backend's Codex path; api.openai.com's ``/v1/responses``
+    rejects the ChatGPT OAuth token. Returns ``(None, None)`` for an API-key
+    call so the default upstream and the request's own path are used.
+    """
+    if request.headers.get(_CHATGPT_ACCOUNT_HEADER):
+        return settings.chatgpt_upstream, "/codex/responses"
+    return None, None
+
+
 def create_app(
     *,
     detector: Detector,
@@ -212,9 +267,15 @@ def create_app(
         vault: Vault,
         in_tokens: int | None = None,
         out_tokens: int | None = None,
+        texts: list[tuple[str, str]] | None = None,
     ) -> None:
         source = _source_label(request, _DEFAULT_SOURCE[wire])
         with suppress(Exception):  # auditing must never break the proxy path
+            pairs = texts or []
+            if settings.save_texts == "anonymized":
+                pairs = [(o, a) for o, a in pairs if o != a]
+            else:  # "all"
+                pairs = [(o, a) for o, a in pairs if o]
             store.record(
                 source=source,
                 wire_format=wire,
@@ -222,26 +283,41 @@ def create_app(
                 entity_counts=vault.type_counts,
                 input_tokens=in_tokens,
                 output_tokens=out_tokens,
+                texts=pairs,
             )
 
-    async def proxy(request: Request, wire: str) -> JSONResponse | StreamingResponse:
+    async def proxy(
+        request: Request,
+        wire: str,
+        upstream: str | None = None,
+        path: str | None = None,
+    ) -> JSONResponse | StreamingResponse:
         try:
             body = await _read_json_body(request)
-        except (ValueError, OSError):
-            return JSONResponse({"error": "could not decode request body"}, status_code=400)
+        except (ValueError, OSError) as exc:
+            return _decode_error(request, exc)
         if not isinstance(body, dict):
             return JSONResponse({"error": "expected a JSON object body"}, status_code=400)
 
         model = str(body.get("model", "unknown"))
         vault = Vault()
+        # Savable (original, anonymized) pairs: USER and TOOL segments that are
+        # novel on this turn. Safe without a lock: the whole transform runs in
+        # one threadpool worker per request and the await below orders all later
+        # reads — revisit if segment anonymization is ever parallelized.
+        captured: list[tuple[str, str]] = []
 
-        def anon(text: str) -> str:
-            return anonymize_into(text, detector, vault)
+        def anon(text: str, author: Author, novel: bool) -> str:
+            cleaned = anonymize_into(text, detector, vault)
+            if novel and author in (Author.USER, Author.TOOL):
+                captured.append((text, cleaned))
+            return cleaned
 
         # Model inference is CPU-bound; run it off the event loop so concurrent
         # requests (Claude Code fires several in parallel) don't stall each other.
         await run_in_threadpool(REQUEST_TRANSFORMS[wire], body, anon)
-        url = _upstream_base(wire, settings) + request.url.path
+        base = upstream.rstrip("/") if upstream else _upstream_base(wire, settings)
+        url = base + (path or request.url.path)
         headers = _passthrough_headers(request.headers)
 
         if body.get("stream"):
@@ -266,7 +342,7 @@ def create_app(
                 if isinstance(payload, dict) and 200 <= status < 300:
                     RESPONSE_TRANSFORMS[wire](payload, lambda t: deanonymize(t, vault))
                     in_tokens, out_tokens = extract_tokens(wire, payload)
-                _audit(request, wire, model, vault, in_tokens, out_tokens)
+                _audit(request, wire, model, vault, in_tokens, out_tokens, texts=captured)
                 return JSONResponse(payload, status)
 
             usage = StreamUsage()
@@ -278,7 +354,15 @@ def create_app(
                         yield chunk
                 finally:
                     # Audit even on a half-finished stream — PII already left.
-                    _audit(request, wire, model, vault, usage.input_tokens, usage.output_tokens)
+                    _audit(
+                        request,
+                        wire,
+                        model,
+                        vault,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        texts=captured,
+                    )
                     await stack.aclose()
 
             return StreamingResponse(
@@ -290,7 +374,7 @@ def create_app(
         if isinstance(result.json, dict) and 200 <= result.status_code < 300:
             RESPONSE_TRANSFORMS[wire](result.json, lambda t: deanonymize(t, vault))
             tokens = extract_tokens(wire, result.json)
-        _audit(request, wire, model, vault, *tokens)
+        _audit(request, wire, model, vault, *tokens, texts=captured)
         return JSONResponse(result.json if result.json is not None else {}, result.status_code)
 
     @app.get("/healthz")
@@ -307,14 +391,16 @@ def create_app(
         # rehydrate and no interaction to audit.
         try:
             body = await _read_json_body(request)
-        except (ValueError, OSError):
-            return JSONResponse({"error": "could not decode request body"}, status_code=400)
+        except (ValueError, OSError) as exc:
+            return _decode_error(request, exc)
         if not isinstance(body, dict):
             return JSONResponse({"error": "expected a JSON object body"}, status_code=400)
         vault = Vault()
-        await run_in_threadpool(
-            REQUEST_TRANSFORMS["anthropic"], body, lambda t: anonymize_into(t, detector, vault)
-        )
+
+        def _anon(t: str, _author: Author, _novel: bool) -> str:
+            return anonymize_into(t, detector, vault)
+
+        await run_in_threadpool(REQUEST_TRANSFORMS["anthropic"], body, _anon)
         url = _upstream_base("anthropic", settings) + request.url.path
         result = await forward(url, _passthrough_headers(request.headers), body)
         return JSONResponse(result.json if result.json is not None else {}, result.status_code)
@@ -325,7 +411,14 @@ def create_app(
 
     @app.post("/v1/responses", response_model=None)
     async def openai_responses(request: Request) -> JSONResponse | StreamingResponse:
-        return await proxy(request, "openai_responses")
+        # Codex routes the model call here for both auth modes. A ChatGPT-account
+        # (subscription) session is detected by its header and forwarded to the
+        # ChatGPT backend's Codex path; an API-key session keeps the default
+        # api.openai.com upstream. Same Responses wire format either way; the
+        # client's own auth token passes through untouched, like the Anthropic
+        # OAuth path. Subscription routing is experimental.
+        upstream, path = _responses_route(request, settings)
+        return await proxy(request, "openai_responses", upstream=upstream, path=path)
 
     register_otel_routes(app, detector=detector, store=store, settings=settings)
     register_ui_routes(app, detector=detector, store=store)

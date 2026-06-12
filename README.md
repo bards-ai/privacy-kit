@@ -90,15 +90,19 @@ to cloud LLMs. You can't add a mask callback to them — but they all honor a
 AI tool ──> privacy-kit gateway ──> real LLM API
             pseudonymize ──>
                             <── rehydrate
-            audit (metadata only)
+            audit (counts + saved texts)
 ```
 
 For every request it **pseudonymizes** PII to `[TYPE_N]` placeholders before
 the text leaves your machine, forwards the sanitized body upstream with your
 own auth, **rehydrates** the real values into the response (streaming
 included — placeholders split across SSE chunks are buffered and restored),
-and records a **metadata-only audit row** (entity types and counts — never
-values).
+and records an **audit row**: entity types and counts, plus the request text
+segments selected by `PII_SAVE_TEXTS` — by default the segments where PII was
+replaced are stored with their original and anonymized text (in plaintext, in
+the local SQLite file); set `PII_SAVE_TEXTS=all` to store every segment.
+Conversation history is re-sent by the tools each turn, so saved texts
+accumulate per turn — keep an eye on the DB size, especially with `all`.
 
 ```bash
 pip install 'privacy-kit[gateway]'
@@ -107,8 +111,9 @@ privacy-kit serve                      # loads the model, listens on 127.0.0.1:8
 privacy-kit serve --route claude-code  # ...and auto-route Claude Code while it runs
 privacy-kit setup claude-code --apply  # route Claude Code persistently (no manual exports)
 privacy-kit setup claude-code --remove # undo the persistent routing
-privacy-kit setup codex                # print routing instructions for Codex
-privacy-kit setup cursor               # ... or Cursor's chat panel
+privacy-kit setup codex --apply        # route Codex persistently (edits ~/.codex/config.toml)
+privacy-kit setup codex --remove       # undo the Codex routing
+privacy-kit setup cursor               # ... or Cursor's chat panel (manual; print instructions)
 privacy-kit report                     # summarize the audit log
 privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 ```
@@ -116,7 +121,7 @@ privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 While the gateway runs, a **PII preview UI** is served at
 `http://127.0.0.1:8787/ui`: paste any text to see detected spans highlighted by
 entity type next to the pseudonymized version that would leave your machine,
-and browse the metadata-only audit log (totals by type, recent interactions).
+and browse the audit log (totals by type, recent interactions).
 The page is a single inline file — no external assets, no CDN — and the live
 preview is processed in memory only: never stored, logged, or audited.
 
@@ -128,6 +133,17 @@ previous value on shutdown (a value you changed yourself in the meantime is
 never clobbered). Works with a Claude Max/Pro subscription — no API key
 required; the gateway forwards your OAuth login token and keeps Claude Code's
 system identifier intact so Anthropic accepts the request.
+
+`privacy-kit setup codex --apply` does the same for Codex, writing
+`openai_base_url` into `~/.codex/config.toml`. Codex routes its model call
+through that base URL in **both** auth modes, so one setting covers both: a
+ChatGPT-account login (free/Plus/Pro, **no API key** — experimental) and an API
+key. The gateway recognizes a subscription request by its `chatgpt-account-id`
+header and forwards it to chatgpt.com's backend with your login token untouched;
+an API-key request goes to api.openai.com. Known limitations of subscription
+mode: Codex tries a WebSocket first and falls back to HTTPS (the gateway routes
+the HTTPS call), and Codex's plugin/MCP "apps" panel is unaffected by the
+gateway, so it may log a harmless startup warning.
 
 Supported wire formats: Anthropic Messages (`/v1/messages`,
 `/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses.
@@ -250,8 +266,10 @@ export PII_THRESHOLD=0.5            # min confidence for a span to count as PII
 export PII_HOST=127.0.0.1
 export PII_PORT=8787
 export PII_DB_PATH=privacy_kit.sqlite
+export PII_SAVE_TEXTS=anonymized    # save request texts: "anonymized" (default) or "all"
 export PII_ANTHROPIC_UPSTREAM=https://api.anthropic.com
 export PII_OPENAI_UPSTREAM=https://api.openai.com
+export PII_CHATGPT_UPSTREAM=https://chatgpt.com/backend-api  # Codex subscription mode upstream
 export PII_OTEL_DOWNSTREAM=          # optional collector for scrubbed telemetry
 ```
 
@@ -264,7 +282,8 @@ The model is not bundled in the package. It is downloaded on first use and reuse
 | Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
 | LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
 | Claude Code | Ready | gateway: `privacy-kit setup claude-code` |
-| Codex | Ready | gateway: `privacy-kit setup codex` |
+| Codex (API key) | Ready | gateway: `privacy-kit setup codex --apply` |
+| Codex (ChatGPT subscription) | Experimental | gateway: `privacy-kit setup codex --apply` |
 | Cursor (chat panel) | Ready | gateway: `privacy-kit setup cursor` |
 | OpenTelemetry logs | Ready | gateway OTLP sink (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) |
 | Pydantic AI | Coming soon | Planned integration example |
@@ -284,8 +303,9 @@ For Langfuse/LangChain (observability) use cases:
 4. Langfuse receives the redacted payload.
 
 For the gateway use case the guarantee is stronger: the **LLM provider itself
-never sees the raw values** — only placeholders — and the audit store keeps
-metadata only.
+never sees the raw values** — only placeholders. The local audit store keeps
+entity counts plus the request texts selected by `PII_SAVE_TEXTS` (original and
+anonymized, in plaintext on your machine).
 
 ## Transformers Backend
 
@@ -346,7 +366,8 @@ make serve        # run the gateway locally
 
 A privacy invariant is enforced by lint and tests: code under `src/` must
 never print or log the text it processes (ruff T20 + the log-safety test
-suite), and the audit store schema has no place to put a raw value.
+suite), and raw text lives only in the audit store's dedicated texts table
+(scoped by `PII_SAVE_TEXTS`) — never in any other table, log, or output.
 
 ## License
 

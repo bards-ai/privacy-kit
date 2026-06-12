@@ -6,18 +6,18 @@ aggregates. Construct one :class:`AuditStore` per process and reuse it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, SQLModel, create_engine, func, select
 
 from privacy_kit.gateway.config import get_settings
-from privacy_kit.gateway.store.models import Detection, Interaction
+from privacy_kit.gateway.store.models import Detection, Interaction, InteractionText
 
 
 class AuditStore:
-    """Records and queries metadata-only audit rows."""
+    """Records and queries audit rows: metadata plus saved text segments."""
 
     def __init__(self, db_path: Path | str | None = None, *, echo: bool = False) -> None:
         path = str(db_path or get_settings().db_path)
@@ -36,8 +36,11 @@ class AuditStore:
         language: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        texts: Sequence[tuple[str, str]] = (),
     ) -> int:
-        """Persist one interaction and its per-type detections; return its id."""
+        """Persist one interaction, its per-type detections, and any saved text
+        segments (``(original, anonymized)`` pairs, in capture order); return its id.
+        """
         counts = {etype: int(n) for etype, n in entity_counts.items() if n}
         interaction = Interaction(
             source=source,
@@ -58,6 +61,15 @@ class AuditStore:
                 session.add(
                     Detection(interaction_id=interaction.id, entity_type=etype, count=count)
                 )
+            for seq, (original, anonymized) in enumerate(texts):
+                session.add(
+                    InteractionText(
+                        interaction_id=interaction.id,
+                        seq=seq,
+                        original=original,
+                        anonymized=anonymized,
+                    )
+                )
             session.commit()
             return interaction.id
 
@@ -76,6 +88,16 @@ class AuditStore:
             "entities_total": sum(by_type.values()),
             "entities_by_type": by_type,
         }
+
+    def texts(self, interaction_id: int) -> list[InteractionText]:
+        """Saved text segments for one interaction, in capture order."""
+        with Session(self.engine) as session:
+            statement = (
+                select(InteractionText)
+                .where(InteractionText.interaction_id == interaction_id)
+                .order_by(InteractionText.seq)  # type: ignore[arg-type]
+            )
+            return list(session.exec(statement).all())
 
     def recent(self, limit: int = 50) -> list[Interaction]:
         """Return the most recent interactions, newest first."""

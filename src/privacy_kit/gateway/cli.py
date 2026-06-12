@@ -103,12 +103,12 @@ def setup(
         False,
         "--apply",
         help="Don't just print: write the routing into the tool's own config "
-        "(claude-code only — edits ~/.claude/settings.json).",
+        "(claude-code edits ~/.claude/settings.json; codex edits ~/.codex/config.toml).",
     ),
     remove: bool = typer.Option(
         False,
         "--remove",
-        help="Remove a previously applied routing (claude-code only).",
+        help="Remove a previously applied routing (claude-code and codex).",
     ),
     settings_file: Path | None = typer.Option(
         None, help="Override the tool settings file to edit (advanced/testing)."
@@ -128,10 +128,10 @@ def setup(
     if apply and remove:
         typer.secho("--apply and --remove are mutually exclusive.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
-    if (apply or remove) and tool != "claude-code":
+    if (apply or remove) and tool == "cursor":
         typer.secho(
-            f"--apply/--remove only support claude-code for now; for {tool} use the "
-            "printed instructions below.",
+            "--apply/--remove support claude-code and codex; Cursor is configured in "
+            "its own Settings UI — use the printed instructions below.",
             fg=typer.colors.RED,
             err=True,
         )
@@ -141,6 +141,16 @@ def setup(
     base = f"http://{host or settings.host}:{port or settings.port}"
 
     if remove:
+        if tool == "codex":
+            removed_keys = route.remove_codex_route(settings_file)
+            codex_path = settings_file or route.codex_config_path()
+            if not removed_keys:
+                typer.echo(f"No gateway override found in {codex_path}; nothing to do.")
+            else:
+                for key, value in removed_keys.items():
+                    typer.secho(f"Removed {key}={value} from {codex_path}.", fg=typer.colors.GREEN)
+                typer.echo("New Codex sessions talk to OpenAI directly again.")
+            return
         removed = route.remove_claude_code_route(settings_file)
         path = settings_file or route.claude_settings_path()
         if removed is None:
@@ -151,6 +161,25 @@ def setup(
         return
 
     if apply:
+        if tool == "codex":
+            try:
+                codex_change = route.apply_codex_route(base, settings_file)
+            except ValueError as exc:
+                typer.secho(f"Could not edit the config file: {exc}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(1) from exc
+            for key, value in codex_change.applied.items():
+                typer.secho(f"Wrote {key}={value} to {codex_change.path}.", fg=typer.colors.GREEN)
+                prev = codex_change.previous[key]
+                if prev is not None and prev != value:
+                    typer.echo(f"  (replaced previous value: {prev})")
+            for key, value in codex_change.removed.items():
+                typer.echo(f"  Removed stale {key}={value} (left by an earlier version).")
+            typer.echo(
+                "New Codex sessions now route through the gateway — works for both "
+                "ChatGPT-subscription and API-key logins. Keep `privacy-kit serve` "
+                "running. Undo with: privacy-kit setup codex --remove"
+            )
+            return
         try:
             change = route.apply_claude_code_route(base, settings_file)
         except ValueError as exc:
@@ -198,7 +227,15 @@ def _setup_text(tool: str, base: str) -> str:
         )
     if tool == "codex":
         return (
-            f"# Route Codex through privacy-kit (run `privacy-kit serve` first):\n"
+            f"# Route Codex through privacy-kit (run `privacy-kit serve` first).\n"
+            f"# Apply automatically (edits ~/.codex/config.toml):\n"
+            f"#   privacy-kit setup codex --apply     # undo with: --remove\n"
+            f"#\n"
+            f"# One setting routes both auth modes — Codex's model call follows\n"
+            f"# openai_base_url whether you're signed in with a ChatGPT account\n"
+            f"# (free/Plus/Pro, no API key) or an API key. A subscription request is\n"
+            f"# recognized by the gateway and forwarded to chatgpt.com with your\n"
+            f"# login token untouched (experimental).\n"
             f"export OPENAI_BASE_URL={base}/v1\n"
             f'# or in ~/.codex/config.toml:  openai_base_url = "{base}/v1"\n'
             f"\n{otel}\n"
