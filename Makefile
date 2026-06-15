@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-all check lint type test test-model fmt serve clean docker-build docker-run
+.PHONY: help install install-all check lint type test test-model fmt setup run serve clean docker-build docker-run
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -26,6 +26,13 @@ test: ## Run the test suite (model-download tests are skipped unless PII_RUN_MOD
 test-model: ## Run the tests that download and exercise the real model
 	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py \
 		tests/test_model_download.py tests/test_gateway_e2e.py tests/test_cli.py
+
+setup: ## One-time: route all supported tools through the gateway (Claude Code + Codex)
+	uv run privacy-kit setup claude-code --apply
+	uv run privacy-kit setup codex --apply
+	@echo "Cursor is configured in its own Settings UI: uv run privacy-kit setup cursor"
+
+run: install serve ## One-liner: install deps then run the gateway proxy
 
 serve: ## Run the gateway proxy locally
 	uv run privacy-kit serve
