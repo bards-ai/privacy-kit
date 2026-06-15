@@ -14,6 +14,20 @@ trust boundary. There are two operations and two deployment modes:
 | **Data is stored / observed** → redact, one-way | `Redactor`, Langfuse mask, LangChain callback | OTLP sink scrubbing telemetry |
 | **Data is in a live LLM loop** → pseudonymize, reversible | `Vault` (`anonymize` / `deanonymize`) | **Gateway** for Claude Code, Codex, Cursor |
 
+## Quick start
+
+Route your AI tools through the local privacy gateway in two commands:
+
+```bash
+make setup    # one-time: route Claude Code + Codex through the gateway
+make run      # install deps + start the gateway on http://127.0.0.1:8787
+```
+
+Then start a **new** tool session and open `http://127.0.0.1:8787/ui` to see
+detected PII and the before/after text. (Cursor is routed from its own Settings
+UI — run `privacy-kit setup cursor` for instructions.) Undo routing with
+`privacy-kit setup claude-code --remove` / `privacy-kit setup codex --remove`.
+
 ## Install
 
 ```bash
