@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-all check lint type test test-model fmt setup run serve clean docker-build docker-run
+.PHONY: help install install-all check lint type test test-model fmt setup setup-claude-code setup-codex setup-remove setup-claude-code-remove setup-codex-remove run serve clean docker-build docker-run
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 
 install: ## Install the project + dev tooling (ONNX backend + gateway)
 	uv sync --extra gateway
@@ -27,10 +27,22 @@ test-model: ## Run the tests that download and exercise the real model
 	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py \
 		tests/test_model_download.py tests/test_gateway_e2e.py tests/test_cli.py
 
-setup: ## One-time: route all supported tools through the gateway (Claude Code + Codex)
-	uv run privacy-kit setup claude-code --apply
-	uv run privacy-kit setup codex --apply
+setup: setup-claude-code setup-codex ## One-time: route all supported tools through the gateway (Claude Code + Codex)
 	@echo "Cursor is configured in its own Settings UI: uv run privacy-kit setup cursor"
+
+setup-claude-code: ## Route Claude Code through the gateway (edits ~/.claude/settings.json)
+	uv run privacy-kit setup claude-code --apply
+
+setup-codex: ## Route Codex through the gateway (edits ~/.codex/config.toml)
+	uv run privacy-kit setup codex --apply
+
+setup-remove: setup-claude-code-remove setup-codex-remove ## Undo: stop routing all supported tools through the gateway
+
+setup-claude-code-remove: ## Undo the Claude Code routing
+	uv run privacy-kit setup claude-code --remove
+
+setup-codex-remove: ## Undo the Codex routing
+	uv run privacy-kit setup codex --remove
 
 run: install serve ## One-liner: install deps then run the gateway proxy
 
