@@ -119,9 +119,12 @@ def test_cli_setup_apply_and_remove(tmp_path: Path) -> None:
     assert "env" not in read(settings)
 
 
-def test_cli_setup_apply_rejected_for_other_tools(tmp_path: Path) -> None:
+def test_cli_setup_cursor_apply_falls_back_to_printed_instructions(tmp_path: Path) -> None:
+    # Cursor has no config file to edit: --apply isn't a hard error, it just
+    # prints the Settings-UI instructions instead of silently doing nothing.
     result = runner.invoke(app, ["setup", "cursor", "--apply"])
-    assert result.exit_code == 1
+    assert result.exit_code == 0
+    assert "Override OpenAI Base URL" in result.stdout
 
 
 def test_cli_setup_text_mentions_auto_apply() -> None:

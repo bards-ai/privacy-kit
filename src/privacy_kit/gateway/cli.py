@@ -128,17 +128,18 @@ def setup(
     if apply and remove:
         typer.secho("--apply and --remove are mutually exclusive.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
-    if (apply or remove) and tool == "cursor":
-        typer.secho(
-            "--apply/--remove support claude-code and codex; Cursor is configured in "
-            "its own Settings UI — use the printed instructions below.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(1)
-
     settings = get_settings()
     base = f"http://{host or settings.host}:{port or settings.port}"
+
+    if (apply or remove) and tool == "cursor":
+        typer.secho(
+            "--apply/--remove support claude-code and codex only; Cursor is configured "
+            "in its own Settings UI — see the instructions below.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        typer.echo(_setup_text(tool, base))
+        return
 
     if remove:
         if tool == "codex":
@@ -231,13 +232,23 @@ def _setup_text(tool: str, base: str) -> str:
             f"# Apply automatically (edits ~/.codex/config.toml):\n"
             f"#   privacy-kit setup codex --apply     # undo with: --remove\n"
             f"#\n"
-            f"# One setting routes both auth modes — Codex's model call follows\n"
-            f"# openai_base_url whether you're signed in with a ChatGPT account\n"
-            f"# (free/Plus/Pro, no API key) or an API key. A subscription request is\n"
-            f"# recognized by the gateway and forwarded to chatgpt.com with your\n"
-            f"# login token untouched (experimental).\n"
-            f"export OPENAI_BASE_URL={base}/v1\n"
-            f'# or in ~/.codex/config.toml:  openai_base_url = "{base}/v1"\n'
+            f"# This adds a dedicated provider rather than a bare openai_base_url:\n"
+            f"# Codex 0.139+ tries a Responses WebSocket transport first and only\n"
+            f"# falls back to HTTP after it fails (the 'Falling back from WebSockets'\n"
+            f"# warning). supports_websockets = false skips that — every request is\n"
+            f"# HTTP the gateway can sanitize. requires_openai_auth keeps both auth\n"
+            f"# modes working: a ChatGPT-subscription request (free/Plus/Pro, no API\n"
+            f"# key) is recognized by the gateway and forwarded to chatgpt.com with\n"
+            f"# your login token untouched (experimental); an API key works too.\n"
+            f"#\n"
+            f"# Or by hand in ~/.codex/config.toml:\n"
+            f'#   model_provider = "privacy-kit"\n'
+            f"#   [model_providers.privacy-kit]\n"
+            f'#   name = "privacy-kit"\n'
+            f'#   base_url = "{base}/v1"\n'
+            f'#   wire_api = "responses"\n'
+            f"#   requires_openai_auth = true\n"
+            f"#   supports_websockets = false\n"
             f"\n{otel}\n"
         )
     # cursor

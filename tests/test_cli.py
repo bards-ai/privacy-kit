@@ -29,10 +29,11 @@ def test_setup_claude_code_prints_base_url() -> None:
     assert "OTEL_EXPORTER_OTLP_PROTOCOL=http/json" in result.stdout
 
 
-def test_setup_codex_prints_openai_base_url() -> None:
+def test_setup_codex_prints_provider_block() -> None:
     result = runner.invoke(app, ["setup", "codex"])
     assert result.exit_code == 0
-    assert "OPENAI_BASE_URL=" in result.stdout
+    assert 'model_provider = "privacy-kit"' in result.stdout
+    assert "supports_websockets = false" in result.stdout
     assert "/v1" in result.stdout
 
 
