@@ -65,8 +65,13 @@ def build(
 ) -> tuple[TestClient, CapturingForwarder, AuditStore]:
     store = AuditStore(tmp_path / "audit.sqlite")
     forwarder = CapturingForwarder(factory)
+    # The default policy is "monitor" (forward originals); these tests assert the
+    # pseudonymize behavior, so default to it unless the caller overrides.
     app = create_app(
-        detector=LiteralDetector(PII), store=store, forwarder=forwarder, settings=settings
+        detector=LiteralDetector(PII),
+        store=store,
+        forwarder=forwarder,
+        settings=settings or Settings(_env_file=None, policy="pseudonymize"),
     )
     return TestClient(app), forwarder, store
 
@@ -122,6 +127,75 @@ def test_anthropic_anonymizes_forwards_rehydrates_audits(tmp_path: Path) -> None
     assert summary["entities_by_type"] == {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1}
     assert store.recent()[0].source == "claude-code"
     assert store.recent()[0].input_tokens == 12
+    assert store.recent()[0].policy == "pseudonymize"
+
+
+def test_monitor_mode_forwards_original_but_logs_detection(tmp_path: Path) -> None:
+    """In monitor mode (the default) the prompt is forwarded unchanged — real PII
+    reaches the upstream — but the detection is still logged: entity counts, the
+    would-be-anonymized text, and ``policy="monitor"``."""
+    settings = Settings(_env_file=None, policy="monitor", save_texts="all")
+    client, forwarder, store = build(
+        tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
+    )
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "I'm John Smith, email john@x.com"}],
+        },
+    )
+    assert resp.status_code == 200
+
+    # Upstream received the ORIGINAL values, not placeholders.
+    sent = str(forwarder.last_payload)
+    assert "John Smith" in sent and "john@x.com" in sent
+    assert "[PERSON_NAME_1]" not in sent
+
+    # ...but the detection was still logged.
+    row = store.recent()[0]
+    assert row.policy == "monitor"
+    assert row.entity_counts == {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1}
+    assert row.id is not None
+    rows = store.texts(row.id)
+    assert len(rows) == 1
+    assert rows[0].original == "I'm John Smith, email john@x.com"
+    # The anonymized column still records what *would* have been redacted.
+    assert "[PERSON_NAME_1]" in rows[0].anonymized
+    assert "[EMAIL_ADDRESS_1]" in rows[0].anonymized
+
+
+def test_monitor_mode_is_the_default(tmp_path: Path) -> None:
+    """With no explicit settings, the proxy forwards originals (monitor default)."""
+    # build() pins pseudonymize, so construct the app directly with default settings.
+    store = AuditStore(tmp_path / "audit.sqlite")
+    forwarder = CapturingForwarder(lambda p: ForwardResult(200, {"content": []}, {}))
+    app = create_app(
+        detector=LiteralDetector(PII),
+        store=store,
+        forwarder=forwarder,
+        settings=Settings(_env_file=None),
+    )
+    resp = TestClient(app).post(
+        "/v1/messages",
+        json={"model": "m", "messages": [{"role": "user", "content": "hi John Smith"}]},
+    )
+    assert resp.status_code == 200
+    assert "John Smith" in str(forwarder.last_payload)
+    assert store.recent()[0].policy == "monitor"
+
+
+def test_monitor_mode_count_tokens_forwards_original(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor")
+    client, forwarder, _ = build(
+        tmp_path, lambda p: ForwardResult(200, {"input_tokens": 9}, {}), settings
+    )
+    resp = client.post(
+        "/v1/messages/count_tokens",
+        json={"model": "m", "messages": [{"role": "user", "content": "John Smith here"}]},
+    )
+    assert resp.status_code == 200
+    assert "John Smith" in str(forwarder.last_payload)
 
 
 def test_anthropic_forwarded_payload_is_fully_anonymized(tmp_path: Path) -> None:
@@ -201,7 +275,7 @@ def test_anthropic_forwarded_payload_is_fully_anonymized(tmp_path: Path) -> None
 
 
 def test_default_mode_saves_only_changed_segments(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, save_texts="anonymized")
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="pseudonymize")
     client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings)
     resp = client.post(
         "/v1/messages",
@@ -225,7 +299,7 @@ def test_default_mode_saves_only_changed_segments(tmp_path: Path) -> None:
 
 
 def test_all_mode_saves_every_segment(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings)
     resp = client.post(
         "/v1/messages",
@@ -459,7 +533,14 @@ def test_claude_code_identifier_preserved_but_rest_anonymized(tmp_path: Path) ->
             "john@x.com": "EMAIL_ADDRESS",
         }
     )
-    client = TestClient(create_app(detector=detector, store=store, forwarder=forwarder))
+    client = TestClient(
+        create_app(
+            detector=detector,
+            store=store,
+            forwarder=forwarder,
+            settings=Settings(_env_file=None, policy="pseudonymize"),
+        )
+    )
     identifier = "You are Claude Code, Anthropic's official CLI for Claude."
     client.post(
         "/v1/messages",
@@ -573,7 +654,7 @@ def test_undecodable_body_returns_400(tmp_path: Path) -> None:
 
 def test_anthropic_historical_user_messages_not_re_saved(tmp_path: Path) -> None:
     """On turn 2+ the old user messages re-submitted in history must not be re-saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -603,7 +684,7 @@ def test_anthropic_historical_user_messages_not_re_saved(tmp_path: Path) -> None
 
 def test_openai_chat_historical_user_messages_not_re_saved(tmp_path: Path) -> None:
     """Chat Completions: old user messages in re-submitted history are not re-saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"choices": []}, {}), settings
     )
@@ -631,7 +712,7 @@ def test_openai_chat_historical_user_messages_not_re_saved(tmp_path: Path) -> No
 
 def test_openai_responses_historical_user_messages_not_re_saved(tmp_path: Path) -> None:
     """Responses API: stateless-mode history (past user turns) is not re-saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"output": [], "output_text": ""}, {}), settings
     )
@@ -662,7 +743,7 @@ def test_openai_responses_historical_user_messages_not_re_saved(tmp_path: Path) 
 
 def test_anthropic_system_prompt_not_saved(tmp_path: Path) -> None:
     """System prompt is anonymized upstream but must never appear in InteractionText."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -688,7 +769,7 @@ def test_anthropic_system_prompt_not_saved(tmp_path: Path) -> None:
 
 def test_anthropic_assistant_turn_not_saved(tmp_path: Path) -> None:
     """Re-sent assistant turns are anonymized but must not appear in InteractionText."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -714,7 +795,7 @@ def test_anthropic_assistant_turn_not_saved(tmp_path: Path) -> None:
 
 def test_anthropic_tool_use_arguments_not_saved(tmp_path: Path) -> None:
     """LLM-authored tool_use inputs are anonymized but must not be saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -749,7 +830,7 @@ def test_anthropic_tool_use_arguments_not_saved(tmp_path: Path) -> None:
 
 def test_anthropic_tool_result_data_is_saved(tmp_path: Path) -> None:
     """tool_result content (file/command data) must be both anonymized and saved."""
-    settings = Settings(_env_file=None, save_texts="anonymized")
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -786,7 +867,7 @@ def test_anthropic_tool_result_data_is_saved(tmp_path: Path) -> None:
 def test_anthropic_injected_system_reminder_not_saved(tmp_path: Path) -> None:
     """Claude Code embeds <system-reminder> context in user turns; those blocks
     are anonymized for upstream but must never be saved — only the real message."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
     )
@@ -837,7 +918,7 @@ def test_is_injected_system_text_patterns() -> None:
 
 def test_openai_chat_system_message_not_saved(tmp_path: Path) -> None:
     """OpenAI chat system-role messages are anonymized but must not be saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"choices": []}, {}), settings
     )
@@ -863,7 +944,7 @@ def test_openai_chat_system_message_not_saved(tmp_path: Path) -> None:
 
 def test_openai_chat_tool_call_arguments_not_saved(tmp_path: Path) -> None:
     """LLM tool_calls arguments are anonymized but must not be saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"choices": []}, {}), settings
     )
@@ -898,7 +979,7 @@ def test_openai_chat_tool_call_arguments_not_saved(tmp_path: Path) -> None:
 
 def test_openai_chat_tool_role_data_is_saved(tmp_path: Path) -> None:
     """tool-role messages (function outputs) are savable data segments."""
-    settings = Settings(_env_file=None, save_texts="anonymized")
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"choices": []}, {}), settings
     )
@@ -923,7 +1004,7 @@ def test_openai_chat_tool_role_data_is_saved(tmp_path: Path) -> None:
 
 def test_openai_responses_instructions_not_saved(tmp_path: Path) -> None:
     """Responses API instructions (system prompt) are anonymized but not saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"output": [], "output_text": ""}, {}), settings
     )
@@ -947,7 +1028,7 @@ def test_openai_responses_instructions_not_saved(tmp_path: Path) -> None:
 
 def test_openai_responses_function_call_output_saved(tmp_path: Path) -> None:
     """function_call_output data (tool return values) is a savable segment."""
-    settings = Settings(_env_file=None, save_texts="anonymized")
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"output": [], "output_text": ""}, {}), settings
     )
@@ -976,7 +1057,7 @@ def test_openai_responses_function_call_output_saved(tmp_path: Path) -> None:
 
 def test_openai_responses_function_call_arguments_not_saved(tmp_path: Path) -> None:
     """function_call arguments (LLM-authored) are anonymized but not saved."""
-    settings = Settings(_env_file=None, save_texts="all")
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
     client, forwarder, store = build(
         tmp_path, lambda p: ForwardResult(200, {"output": [], "output_text": ""}, {}), settings
     )

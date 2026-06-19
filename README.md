@@ -102,21 +102,26 @@ to cloud LLMs. You can't add a mask callback to them — but they all honor a
 
 ```
 AI tool ──> privacy-kit gateway ──> real LLM API
-            pseudonymize ──>
-                            <── rehydrate
-            audit (counts + saved texts)
+            detect + audit
+            pseudonymize ──>  (enforce mode only)
+                          <── rehydrate
 ```
 
-For every request it **pseudonymizes** PII to `[TYPE_N]` placeholders before
-the text leaves your machine, forwards the sanitized body upstream with your
-own auth, **rehydrates** the real values into the response (streaming
-included — placeholders split across SSE chunks are buffered and restored),
-and records an **audit row**: entity types and counts, plus the request text
-segments selected by `PII_SAVE_TEXTS` — by default the segments where PII was
-replaced are stored with their original and anonymized text (in plaintext, in
-the local SQLite file); set `PII_SAVE_TEXTS=all` to store every segment.
-Conversation history is re-sent by the tools each turn, so saved texts
-accumulate per turn — keep an eye on the DB size, especially with `all`.
+By default the gateway runs in **monitor** mode (`PII_POLICY=monitor`): for every
+request it detects PII and records an **audit row** — entity types and counts, plus
+the request text segments selected by `PII_SAVE_TEXTS` (original and the
+would-be-anonymized text, in plaintext in the local SQLite file) — but forwards the
+prompt **unchanged**, so the real values reach the upstream. Use it to see what
+privacy-kit would catch before turning on enforcement.
+
+Set `PII_POLICY=pseudonymize` to enforce: PII is replaced with `[TYPE_N]`
+placeholders before the text leaves your machine, the sanitized body is forwarded
+upstream with your own auth, and the real values are **rehydrated** into the
+response (streaming included — placeholders split across SSE chunks are buffered and
+restored). The audit row is written either way; `PII_SAVE_TEXTS=all` stores every
+eligible segment instead of only those where PII was found. Conversation history is
+re-sent by the tools each turn, so saved texts accumulate per turn — keep an eye on
+the DB size, especially with `all`.
 
 ```bash
 pip install 'privacy-kit[gateway]'
@@ -277,6 +282,9 @@ export PII_MODEL_CACHE_DIR=/path/to/model-cache              # optional
 export PII_THRESHOLD=0.5            # min confidence for a span to count as PII
 
 # gateway only:
+export PII_POLICY=monitor           # "monitor" (default): detect + log, forward prompt unchanged
+                                    #   (real PII reaches the upstream); "pseudonymize": replace
+                                    #   PII with [TYPE_N] placeholders before forwarding, then rehydrate
 export PII_HOST=127.0.0.1
 export PII_PORT=8787
 export PII_DB_PATH=privacy_kit.sqlite
@@ -316,10 +324,13 @@ For Langfuse/LangChain (observability) use cases:
 3. Before observability export, privacy-kit redacts the Langfuse/LangChain payload.
 4. Langfuse receives the redacted payload.
 
-For the gateway use case the guarantee is stronger: the **LLM provider itself
-never sees the raw values** — only placeholders. The local audit store keeps
-entity counts plus the request texts selected by `PII_SAVE_TEXTS` (original and
-anonymized, in plaintext on your machine).
+For the gateway use case, what reaches the provider depends on `PII_POLICY`. In
+the default **monitor** mode the prompt is forwarded **unchanged** (raw values
+reach the provider) while the detection is logged locally. Under
+**`PII_POLICY=pseudonymize`** the guarantee is stronger: the **LLM provider itself
+never sees the raw values** — only placeholders. Either way, the local audit store
+keeps entity counts plus the request texts selected by `PII_SAVE_TEXTS` (original
+and anonymized, in plaintext on your machine).
 
 ## Transformers Backend
 

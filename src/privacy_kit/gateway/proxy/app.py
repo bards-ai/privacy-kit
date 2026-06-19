@@ -1,11 +1,14 @@
 """The privacy-kit gateway proxy.
 
 A FastAPI app that AI tools route through via their ``*_BASE_URL`` overrides. For
-each request it anonymizes the prompt text, forwards the sanitized body to the
-real upstream (passing the client's own auth through), rehydrates the response
-with the real values, and writes an audit row (metadata plus user-authored text
-and tool/file data segments filtered by ``Settings.save_texts``; system prompts
-and other machine-authored text are anonymized upstream but never stored).
+each request it detects PII and writes an audit row (metadata plus user-authored
+text and tool/file data segments filtered by ``Settings.save_texts``; system
+prompts and other machine-authored text are never stored). What it forwards
+depends on ``Settings.policy``: under the default ``monitor`` policy the prompt is
+sent **unchanged** (real values reach the upstream — detection is logged only);
+under ``pseudonymize`` the PII is replaced with placeholders before forwarding and
+the response is rehydrated with the real values. The client's own auth passes
+through either way.
 
 Streaming (SSE) responses are de-anonymized on the fly — see ``streaming.py``.
 The upstream stream is opened before the client response is constructed, so an
@@ -280,6 +283,7 @@ def create_app(
                 source=source,
                 wire_format=wire,
                 model=model,
+                policy=settings.policy,
                 entity_counts=vault.type_counts,
                 input_tokens=in_tokens,
                 output_tokens=out_tokens,
@@ -307,11 +311,16 @@ def create_app(
         # reads — revisit if segment anonymization is ever parallelized.
         captured: list[tuple[str, str]] = []
 
+        # In "monitor" mode we still run detection (to populate the vault and log
+        # what was present) but forward the original text — real values reach the
+        # upstream. "pseudonymize" forwards the placeholdered text instead.
+        forward_original = settings.policy == "monitor"
+
         def anon(text: str, author: Author, novel: bool) -> str:
             cleaned = anonymize_into(text, detector, vault)
             if novel and author in (Author.USER, Author.TOOL):
                 captured.append((text, cleaned))
-            return cleaned
+            return text if forward_original else cleaned
 
         # Model inference is CPU-bound; run it off the event loop so concurrent
         # requests (Claude Code fires several in parallel) don't stall each other.
@@ -398,7 +407,9 @@ def create_app(
         vault = Vault()
 
         def _anon(t: str, _author: Author, _novel: bool) -> str:
-            return anonymize_into(t, detector, vault)
+            # Monitor mode forwards the original, so count its tokens; pseudonymize
+            # counts the placeholdered text that actually goes upstream.
+            return t if settings.policy == "monitor" else anonymize_into(t, detector, vault)
 
         await run_in_threadpool(REQUEST_TRANSFORMS["anthropic"], body, _anon)
         url = _upstream_base("anthropic", settings) + request.url.path

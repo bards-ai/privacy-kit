@@ -20,6 +20,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from privacy_kit.core.types import Span
+from privacy_kit.gateway.config import Settings
 from privacy_kit.gateway.proxy import ForwardResult, create_app
 from privacy_kit.gateway.store import AuditStore
 
@@ -69,7 +70,12 @@ def _build(tmp_path: Path) -> tuple[TestClient, CapturingForwarder, AuditStore]:
     }
     forwarder = CapturingForwarder(ForwardResult(200, upstream_body, {}))
     store = AuditStore(tmp_path / "audit.sqlite")
-    app = create_app(detector=OneLiteralDetector(), store=store, forwarder=forwarder)
+    app = create_app(
+        detector=OneLiteralDetector(),
+        store=store,
+        forwarder=forwarder,
+        settings=Settings(_env_file=None, policy="pseudonymize"),
+    )
     return TestClient(app), forwarder, store
 
 

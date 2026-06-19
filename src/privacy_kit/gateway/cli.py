@@ -84,6 +84,11 @@ def serve(
             "server shuts down."
         )
 
+    if settings.policy == "monitor":
+        typer.secho("Policy: monitor")
+    else:
+        typer.secho("Policy: pseudonymize")
+
     typer.echo("Loading PII model and starting the privacy-kit gateway…")
     typer.echo(f"PII preview UI: http://{bind_host}:{bind_port}/ui")
     try:

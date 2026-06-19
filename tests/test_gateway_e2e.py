@@ -23,6 +23,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from privacy_kit.core.detectors import BardsAiOnnxDetector
+from privacy_kit.gateway.config import Settings
 from privacy_kit.gateway.proxy import ForwardResult, create_app
 from privacy_kit.gateway.store import AuditStore
 
@@ -54,7 +55,14 @@ class EchoUpstream:
 def test_claude_code_path_end_to_end(detector: BardsAiOnnxDetector, tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.sqlite")
     upstream = EchoUpstream()
-    client = TestClient(create_app(detector=detector, store=store, forwarder=upstream))
+    client = TestClient(
+        create_app(
+            detector=detector,
+            store=store,
+            forwarder=upstream,
+            settings=Settings(_env_file=None, policy="pseudonymize"),
+        )
+    )
 
     resp = client.post(
         "/v1/messages",
@@ -126,7 +134,12 @@ class EchoStreamUpstream:
 def test_claude_code_streaming_end_to_end(detector: BardsAiOnnxDetector, tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.sqlite")
     client = TestClient(
-        create_app(detector=detector, store=store, stream_forwarder=EchoStreamUpstream())
+        create_app(
+            detector=detector,
+            store=store,
+            stream_forwarder=EchoStreamUpstream(),
+            settings=Settings(_env_file=None, policy="pseudonymize"),
+        )
     )
 
     resp = client.post(

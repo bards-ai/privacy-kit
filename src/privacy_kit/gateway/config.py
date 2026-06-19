@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     "anonymized" = only those where PII was detected and replaced;
     "all" = every eligible segment."""
 
+    # --- Policy ---
+    policy: Literal["monitor", "pseudonymize"] = "monitor"
+    """How the proxy treats detected PII before forwarding upstream.
+    "monitor" (default): detect and log PII to the audit store, but forward the
+    prompt unchanged — real values reach the upstream LLM. "pseudonymize": replace
+    PII with reversible placeholders before forwarding, and rehydrate the response."""
+
     # --- Proxy ---
     host: str = "127.0.0.1"
     port: int = 8787

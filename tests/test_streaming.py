@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from privacy_kit.core.types import Span
 from privacy_kit.core.vault import Vault
+from privacy_kit.gateway.config import Settings
 from privacy_kit.gateway.proxy import create_app
 from privacy_kit.gateway.proxy.streaming import (
     PlaceholderStreamDecoder,
@@ -164,6 +165,7 @@ def test_streaming_end_to_end_through_app(tmp_path: Path) -> None:
         detector=LiteralDetector({"John Smith": "PERSON_NAME"}),
         store=store,
         stream_forwarder=fwd,
+        settings=Settings(_env_file=None, policy="pseudonymize"),
     )
     client = TestClient(app)
 
