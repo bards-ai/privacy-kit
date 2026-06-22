@@ -15,15 +15,13 @@ Two panels:
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from privacy_kit.core.detectors import Detector
-from privacy_kit.core.vault import Vault, anonymize_into
 from privacy_kit.gateway.store import AuditStore
+from privacy_kit.gateway.webapi import run_preview
 
 _MAX_PREVIEW_CHARS = 50_000
 
@@ -50,22 +48,9 @@ def register_ui_routes(app: FastAPI, *, detector: Detector, store: AuditStore) -
                 status_code=413,
             )
 
-        def run() -> dict[str, Any]:
-            vault = Vault()
-            spans = detector.detect(text)
-            anonymized = anonymize_into(text, detector, vault)
-            return {
-                "spans": [
-                    {"start": s.start, "end": s.end, "label": s.label, "score": s.score}
-                    for s in spans
-                ],
-                "anonymized": anonymized,
-                "counts": vault.type_counts,
-            }
-
         # CPU-bound inference off the event loop; the result goes back to the
         # local caller only — deliberately no audit row and no logging.
-        return JSONResponse(await run_in_threadpool(run))
+        return JSONResponse(await run_in_threadpool(run_preview, detector, text))
 
     @app.get("/ui/api/summary")
     async def ui_summary() -> JSONResponse:
@@ -93,13 +78,17 @@ def register_ui_routes(app: FastAPI, *, detector: Detector, store: AuditStore) -
         interactions = store.recent(limit=min(limit, 200))
         all_texts = []
         for interaction in interactions:
+            if interaction.id is None:
+                continue
             text_rows = store.texts(interaction.id)
             for text_row in text_rows:
-                all_texts.append({
-                    "when": interaction.created_at.isoformat(timespec="seconds"),
-                    "original": text_row.original,
-                    "anonymized": text_row.anonymized,
-                })
+                all_texts.append(
+                    {
+                        "when": interaction.created_at.isoformat(timespec="seconds"),
+                        "original": text_row.original,
+                        "anonymized": text_row.anonymized,
+                    }
+                )
         return JSONResponse({"texts": all_texts})
 
 

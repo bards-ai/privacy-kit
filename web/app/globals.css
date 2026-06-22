@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 210 20% 98%;
+  --foreground: 222 22% 15%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 22% 15%;
+  --muted: 220 14% 94%;
+  --muted-foreground: 220 9% 42%;
+  --border: 220 13% 88%;
+  --input: 220 13% 88%;
+  --primary: 221 83% 53%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 220 14% 93%;
+  --accent-foreground: 222 22% 15%;
+  --ring: 221 83% 53%;
+}
+
+.dark {
+  --background: 222 28% 7%;
+  --foreground: 213 31% 91%;
+  --card: 222 24% 10%;
+  --card-foreground: 213 31% 91%;
+  --muted: 222 20% 15%;
+  --muted-foreground: 218 11% 60%;
+  --border: 222 16% 19%;
+  --input: 222 16% 19%;
+  --primary: 217 91% 60%;
+  --primary-foreground: 222 47% 11%;
+  --accent: 222 20% 15%;
+  --accent-foreground: 213 31% 91%;
+  --ring: 217 91% 60%;
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Thin, theme-aware scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--border));
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}

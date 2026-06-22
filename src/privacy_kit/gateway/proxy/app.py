@@ -31,6 +31,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from privacy_kit.core.detectors import Detector
@@ -46,6 +47,7 @@ from privacy_kit.gateway.proxy.transform import (
 )
 from privacy_kit.gateway.store import AuditStore
 from privacy_kit.gateway.ui import register_ui_routes
+from privacy_kit.gateway.webapi import register_webapi_routes
 
 # ``content-encoding`` is dropped because we decompress the request body here and
 # forward it re-serialized (uncompressed); leaving the header would mislabel it.
@@ -263,6 +265,16 @@ def create_app(
     stream_open: StreamForwarder = stream_forwarder or HttpxStreamForwarder()
     app = FastAPI(title="privacy-kit gateway", version=__version__)
 
+    # Same-origin in production (the dashboard proxies API calls server-side), so
+    # CORS stays off unless explicitly configured for host development.
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     def _audit(
         request: Request,
         wire: str,
@@ -433,6 +445,7 @@ def create_app(
 
     register_otel_routes(app, detector=detector, store=store, settings=settings)
     register_ui_routes(app, detector=detector, store=store)
+    register_webapi_routes(app, detector=detector, store=store, settings=settings)
 
     return app
 

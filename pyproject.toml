@@ -107,8 +107,9 @@ ignore = []
 known-first-party = ["privacy_kit"]
 
 [tool.ruff.lint.flake8-bugbear]
-# Typer's dependency-injection defaults are the idiomatic pattern, not B008 bugs.
-extend-immutable-calls = ["typer.Option", "typer.Argument"]
+# Typer's and FastAPI's dependency-injection defaults are the idiomatic pattern,
+# not B008 bugs.
+extend-immutable-calls = ["typer.Option", "typer.Argument", "fastapi.Query", "fastapi.Depends"]
 
 [tool.mypy]
 python_version = "3.10"

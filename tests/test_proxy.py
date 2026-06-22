@@ -224,7 +224,9 @@ def test_anthropic_forwarded_payload_is_fully_anonymized(tmp_path: Path) -> None
         "messages": [{"role": "user", "content": "ping john@x.com"}],
     }
     anthropic_request(body, _anon)
-    assert body["system"].startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER), "identifier must be preserved"
+    assert str(body["system"]).startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER), (
+        "identifier must be preserved"
+    )
     assert "John Smith" not in body["system"], "system tail must be anonymized"
     assert "john@x.com" not in str(body["messages"])
 
@@ -1081,4 +1083,3 @@ def test_openai_responses_function_call_arguments_not_saved(tmp_path: Path) -> N
     assert iid is not None
     rows = store.texts(iid)
     assert all("john@x.com" not in r.original for r in rows)
-
