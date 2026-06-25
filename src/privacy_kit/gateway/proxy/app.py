@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from privacy_kit.core.detectors import Detector
 from privacy_kit.core.vault import Vault, anonymize_into, deanonymize
 from privacy_kit.gateway.config import Settings, get_settings
+from privacy_kit.gateway.language import detect_language
 from privacy_kit.gateway.otel import register_otel_routes
 from privacy_kit.gateway.proxy.streaming import PlaceholderStreamDecoder, StreamUsage, rewrite_sse
 from privacy_kit.gateway.proxy.transform import (
@@ -287,6 +288,9 @@ def create_app(
         source = _source_label(request, _DEFAULT_SOURCE[wire])
         with suppress(Exception):  # auditing must never break the proxy path
             pairs = texts or []
+            # Detect language from the original user text (unfiltered, so it
+            # still works when only anonymized segments are saved).
+            language = detect_language(" ".join(o for o, _ in pairs if o))
             if settings.save_texts == "anonymized":
                 pairs = [(o, a) for o, a in pairs if o != a]
             else:  # "all"
@@ -297,6 +301,7 @@ def create_app(
                 model=model,
                 policy=settings.policy,
                 entity_counts=vault.type_counts,
+                language=language,
                 input_tokens=in_tokens,
                 output_tokens=out_tokens,
                 texts=pairs,
