@@ -1,9 +1,7 @@
-import Link from "next/link";
-
 import { FilterBar } from "@/components/interactions-controls";
-import { Card, CardContent, ConnectionError, EmptyState, PageHeader } from "@/components/ui";
+import { TextsLive } from "@/components/texts-live";
+import { ConnectionError, PageHeader } from "@/components/ui";
 import { apiGetOr } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
 import type { FilterValues, TextsResponse } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -42,60 +40,7 @@ export default async function TextsPage({
       />
       <FilterBar filters={filters} />
 
-      {data.redacted ? (
-        <p className="mb-4 text-xs text-amber-500">
-          Originals are redacted (PII_EXPOSE_PLAINTEXT=false). Showing anonymized text only.
-        </p>
-      ) : null}
-
-      {error ? (
-        <ConnectionError message={error} />
-      ) : data.texts.length === 0 ? (
-        <EmptyState
-          title="No saved text segments"
-          description="Segments are saved per PII_SAVE_TEXTS. Send a prompt with PII through the gateway to populate this view."
-        />
-      ) : (
-        <div className="space-y-3">
-          {data.texts.map((t) => (
-            <Card key={`${t.interaction_id}-${t.seq}`}>
-              <CardContent className="pt-4">
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{t.source}</span>
-                  <span>·</span>
-                  <span>{t.model}</span>
-                  <span>·</span>
-                  <span>{formatDateTime(t.when)}</span>
-                  <Link
-                    href={`/interactions/${t.interaction_id}`}
-                    className="ml-auto text-primary hover:underline"
-                  >
-                    Interaction #{t.interaction_id}
-                  </Link>
-                </div>
-                <div className="grid gap-3 lg:grid-cols-2">
-                  <div>
-                    <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
-                      Original
-                    </div>
-                    <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 text-sm">
-                      {t.original ?? <span className="text-muted-foreground">[redacted]</span>}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
-                      Anonymized
-                    </div>
-                    <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 font-mono text-sm">
-                      {t.anonymized}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {error ? <ConnectionError message={error} /> : <TextsLive initialData={data} />}
     </>
   );
 }
