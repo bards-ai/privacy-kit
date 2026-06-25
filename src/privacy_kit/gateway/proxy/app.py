@@ -65,6 +65,26 @@ _DEFAULT_SOURCE = {
     "openai_responses": "codex",
 }
 
+# Cursor hook events we handle, mapped to the body field holding scannable text
+# and the kind of decision the event expects back (prompt => continue; file/tool
+# access => permission). See https://cursor.com/docs/hooks.
+_CURSOR_HOOKS = {
+    "beforeSubmitPrompt": ("prompt", "continue"),
+    "beforeReadFile": ("content", "permission"),
+}
+
+
+def _cursor_allow(kind: str) -> JSONResponse:
+    """The allow decision for a Cursor hook of the given kind."""
+    return JSONResponse({"continue": True} if kind == "continue" else {"permission": "allow"})
+
+
+def _cursor_deny(kind: str, message: str) -> JSONResponse:
+    """The deny decision for a Cursor hook of the given kind, with a reason."""
+    if kind == "continue":
+        return JSONResponse({"continue": False, "user_message": message})
+    return JSONResponse({"permission": "deny", "user_message": message})
+
 
 def _source_label(request: Request, default: str) -> str:
     """The client-declared source tool, with the legacy Sieve header honored."""
@@ -430,6 +450,56 @@ def create_app(
         # OAuth path. Subscription routing is experimental.
         upstream, path = _responses_route(request, settings)
         return await proxy(request, "openai_responses", upstream=upstream, path=path)
+
+    @app.post("/v1/cursor-hook")
+    async def cursor_hook(request: Request) -> JSONResponse:
+        """Audit (and optionally block) a Cursor hook event.
+
+        Cursor surfaces that bypass the gateway base URL — Composer, the agent
+        loop, inline edit, Tab — can't be pseudonymized, so the ``privacy-kit hook
+        cursor`` command POSTs each ``beforeSubmitPrompt``/``beforeReadFile`` event
+        here. We scan its text with the warm detector, record an audit row
+        (``source="cursor"``), and return the hook decision: allow under the
+        default monitor policy, or deny when ``PII_CURSOR_BLOCK`` is set and PII was
+        found. Hooks cannot redact, so blocking is the only way to stop PII here.
+        Anything unexpected fails open (allow) — privacy-kit must never wedge Cursor.
+        """
+        try:
+            body = await _read_json_body(request)
+        except (ValueError, OSError):
+            return _cursor_allow("continue")
+        if not isinstance(body, dict):
+            return _cursor_allow("continue")
+
+        event = str(body.get("hook_event_name", ""))
+        field, kind = _CURSOR_HOOKS.get(event, ("", "continue"))
+        text = body.get(field) if field else None
+        if not isinstance(text, str) or not text:
+            return _cursor_allow(kind)
+
+        vault = Vault()
+        cleaned = await run_in_threadpool(anonymize_into, text, detector, vault)
+        with suppress(Exception):  # auditing must never break the hook path
+            pairs = [(text, cleaned)]
+            if settings.save_texts == "anonymized":
+                pairs = [(o, a) for o, a in pairs if o != a]
+            store.record(
+                source="cursor",
+                wire_format=f"cursor:{event}",
+                model=str(body.get("model", "unknown")),
+                policy=settings.policy,
+                entity_counts=vault.type_counts,
+                texts=pairs,
+            )
+
+        if settings.cursor_block and vault.type_counts:
+            types = ", ".join(sorted(vault.type_counts))
+            return _cursor_deny(
+                kind,
+                f"privacy-kit blocked this: detected PII ({types}) that would reach "
+                "Cursor's backend unredacted.",
+            )
+        return _cursor_allow(kind)
 
     register_otel_routes(app, detector=detector, store=store, settings=settings)
     register_ui_routes(app, detector=detector, store=store)

@@ -1055,6 +1055,69 @@ def test_openai_responses_function_call_output_saved(tmp_path: Path) -> None:
     assert "John Smith" not in rows[0].anonymized
 
 
+def test_cursor_hook_monitor_allows_and_audits(tmp_path: Path) -> None:
+    # Default monitor: detect + record, but always allow (hooks can't redact).
+    settings = Settings(_env_file=None, save_texts="all", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "beforeSubmitPrompt",
+            "prompt": "email John Smith at john@x.com",
+            "model": "composer-2.5",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"continue": True}
+
+    recent = store.recent()
+    assert len(recent) == 1
+    assert recent[0].source == "cursor"
+    assert recent[0].wire_format == "cursor:beforeSubmitPrompt"
+    assert recent[0].entity_total == 2  # John Smith + john@x.com
+
+
+def test_cursor_hook_before_read_file_uses_permission_shape(tmp_path: Path) -> None:
+    client, _, _ = build(tmp_path, lambda p: ForwardResult(200, {}, {}))
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={"hook_event_name": "beforeReadFile", "content": "no pii here", "model": "m"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"permission": "allow"}
+
+
+def test_cursor_hook_blocks_on_pii_when_enabled(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor", cursor_block=True)
+    client, _, _ = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={"hook_event_name": "beforeSubmitPrompt", "prompt": "ping John Smith", "model": "m"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["continue"] is False
+    assert "PERSON_NAME" in body["user_message"]
+
+
+def test_cursor_hook_block_allows_clean_prompt(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor", cursor_block=True)
+    client, _, _ = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={"hook_event_name": "beforeSubmitPrompt", "prompt": "no pii at all", "model": "m"},
+    )
+    assert resp.json() == {"continue": True}
+
+
+def test_cursor_hook_unknown_event_allows(tmp_path: Path) -> None:
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}))
+    resp = client.post("/v1/cursor-hook", json={"hook_event_name": "sessionStart"})
+    assert resp.status_code == 200
+    assert resp.json() == {"continue": True}
+    assert store.recent() == []  # nothing scanned, nothing recorded
+
+
 def test_openai_responses_function_call_arguments_not_saved(tmp_path: Path) -> None:
     """function_call arguments (LLM-authored) are anonymized but not saved."""
     settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
@@ -1081,4 +1144,3 @@ def test_openai_responses_function_call_arguments_not_saved(tmp_path: Path) -> N
     assert iid is not None
     rows = store.texts(iid)
     assert all("john@x.com" not in r.original for r in rows)
-

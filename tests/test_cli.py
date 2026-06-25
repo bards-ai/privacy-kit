@@ -49,6 +49,40 @@ def test_setup_unknown_tool_exits_nonzero() -> None:
     assert result.exit_code == 1
 
 
+def test_setup_cursor_rejects_bad_scope() -> None:
+    result = runner.invoke(app, ["setup", "cursor", "--apply", "--scope", "nope"])
+    assert result.exit_code == 1
+
+
+def test_hook_fails_open_when_gateway_down() -> None:
+    # Point at a port nothing is listening on; the hook must allow, not error.
+    result = runner.invoke(
+        app,
+        ["hook", "cursor", "beforeSubmitPrompt"],
+        input='{"prompt": "hi"}',
+        env={"PII_HOST": "127.0.0.1", "PII_PORT": "9"},
+    )
+    assert result.exit_code == 0
+    assert '"continue": true' in result.stdout
+
+
+def test_hook_fails_open_for_before_read_file() -> None:
+    result = runner.invoke(
+        app,
+        ["hook", "cursor", "beforeReadFile"],
+        input='{"content": "hi"}',
+        env={"PII_HOST": "127.0.0.1", "PII_PORT": "9"},
+    )
+    assert result.exit_code == 0
+    assert '"permission": "allow"' in result.stdout
+
+
+def test_hook_non_cursor_tool_allows_without_network() -> None:
+    result = runner.invoke(app, ["hook", "other", "beforeSubmitPrompt"], input="{}")
+    assert result.exit_code == 0
+    assert '"continue": true' in result.stdout
+
+
 def test_report_on_empty_db(tmp_path: Path) -> None:
     db = tmp_path / "audit.sqlite"
     AuditStore(db)  # create empty

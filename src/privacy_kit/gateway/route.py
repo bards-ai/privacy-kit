@@ -269,3 +269,123 @@ def remove_codex_route(config_path: Path | None = None) -> dict[str, str]:
     if removed:
         path.write_text(tomlkit.dumps(doc), encoding="utf-8")
     return removed
+
+
+# --- Cursor hooks -------------------------------------------------------------
+#
+# Cursor only routes its chat panel through a custom OpenAI base URL; Composer,
+# the agent loop, inline edit (Cmd+K), Apply, and Tab stay on Cursor's own
+# backend and never reach the gateway, so they can't be pseudonymized. Cursor
+# *hooks* (https://cursor.com/docs/hooks), however, fire locally inside the agent
+# loop regardless of backend. We register two of them to scan text the gateway
+# never sees: ``beforeSubmitPrompt`` (the typed instruction) and ``beforeReadFile``
+# (a file Cursor is about to send to the model). Hooks can only allow/deny, never
+# rewrite — so this is audit + optional block, not redaction.
+#
+# ``hooks.json`` lives at ``~/.cursor/hooks.json`` (user) or
+# ``<project>/.cursor/hooks.json`` (project). We edit it like Claude Code's
+# settings.json (reusing ``_load``/``_save``): insert our command idempotently,
+# preserve any hooks the user defined, and on remove drop only our own entries.
+
+CURSOR_HOOK_EVENTS = ("beforeSubmitPrompt", "beforeReadFile")
+
+# Distinctive marker in the command string that identifies an entry as ours, so
+# re-apply replaces rather than duplicates and remove never touches user hooks.
+_CURSOR_HOOK_MARKER = "hook cursor"
+
+
+def cursor_hooks_path(scope: str = "user", project_root: Path | None = None) -> Path:
+    """Cursor's ``hooks.json`` for ``scope``: ``user`` (~/.cursor) or ``project``."""
+    if scope == "user":
+        return Path.home() / ".cursor" / "hooks.json"
+    if scope == "project":
+        return (project_root or Path.cwd()) / ".cursor" / "hooks.json"
+    raise ValueError(f"unknown cursor hooks scope {scope!r} (use 'user' or 'project')")
+
+
+@dataclass(frozen=True)
+class CursorHookChange:
+    """What was written to Cursor's hooks.json: the base command and events."""
+
+    path: Path
+    command: str
+    events: tuple[str, ...]
+
+
+def _is_privacy_kit_hook(entry: Any) -> bool:
+    """True if a hooks.json entry is one privacy-kit wrote (by command marker)."""
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("command"), str)
+        and _CURSOR_HOOK_MARKER in entry["command"]
+    )
+
+
+def apply_cursor_hooks(
+    command: str,
+    scope: str = "user",
+    path: Path | None = None,
+    project_root: Path | None = None,
+) -> CursorHookChange:
+    """Register the privacy-kit scan command on Cursor's PII-relevant hooks.
+
+    ``command`` is the base command Cursor runs (the event name is appended as the
+    final argument); it receives the hook JSON on stdin. Inserts one entry per
+    event in :data:`CURSOR_HOOK_EVENTS`, idempotently — any prior privacy-kit entry
+    for that event is replaced, and hooks the user defined are preserved. Raises
+    ``ValueError`` if the file exists but isn't valid JSON or isn't shaped like a
+    hooks file.
+    """
+    target = path or cursor_hooks_path(scope, project_root)
+    data = _load(target)
+    data.setdefault("version", 1)
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ValueError(f"'hooks' in {target} is not a JSON object")
+    for event in CURSOR_HOOK_EVENTS:
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"'hooks.{event}' in {target} is not a JSON array")
+        kept = [e for e in entries if not _is_privacy_kit_hook(e)]
+        kept.append({"command": f"{command} {event}", "type": "command"})
+        hooks[event] = kept
+    _save(target, data)
+    return CursorHookChange(path=target, command=command, events=CURSOR_HOOK_EVENTS)
+
+
+def remove_cursor_hooks(
+    scope: str = "user",
+    path: Path | None = None,
+    project_root: Path | None = None,
+) -> list[str]:
+    """Remove privacy-kit's Cursor hook entries; return the events cleaned up.
+
+    Drops only entries whose command carries the privacy-kit marker, leaving the
+    user's own hooks intact. Prunes emptied event arrays and an empty ``hooks``
+    object. Idempotent; a missing file is a no-op. Raises ``ValueError`` if the
+    file exists but isn't valid JSON.
+    """
+    target = path or cursor_hooks_path(scope, project_root)
+    if not target.exists():
+        return []
+    data = _load(target)
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    cleaned: list[str] = []
+    for event in list(hooks):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries if not _is_privacy_kit_hook(e)]
+        if len(kept) != len(entries):
+            cleaned.append(event)
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if not hooks:
+        data.pop("hooks", None)
+    if cleaned:
+        _save(target, data)
+    return cleaned

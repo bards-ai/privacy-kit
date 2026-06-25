@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -108,12 +110,19 @@ def setup(
         False,
         "--apply",
         help="Don't just print: write the routing into the tool's own config "
-        "(claude-code edits ~/.claude/settings.json; codex edits ~/.codex/config.toml).",
+        "(claude-code edits ~/.claude/settings.json; codex edits ~/.codex/config.toml; "
+        "cursor installs hooks in ~/.cursor/hooks.json).",
     ),
     remove: bool = typer.Option(
         False,
         "--remove",
-        help="Remove a previously applied routing (claude-code and codex).",
+        help="Remove a previously applied routing (claude-code, codex, and cursor).",
+    ),
+    scope: str = typer.Option(
+        "user",
+        "--scope",
+        help="Cursor hooks scope: 'user' (~/.cursor/hooks.json) or 'project' "
+        "(.cursor/hooks.json in the current directory). Ignored for other tools.",
     ),
     settings_file: Path | None = typer.Option(
         None, help="Override the tool settings file to edit (advanced/testing)."
@@ -136,13 +145,46 @@ def setup(
     settings = get_settings()
     base = f"http://{host or settings.host}:{port or settings.port}"
 
-    if (apply or remove) and tool == "cursor":
-        typer.secho(
-            "--apply/--remove support claude-code and codex only; Cursor is configured "
-            "in its own Settings UI — see the instructions below.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
+    if tool == "cursor":
+        if scope not in ("user", "project"):
+            typer.secho(
+                f"Unknown --scope {scope!r} (use 'user' or 'project').",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
+        if apply:
+            command = _cursor_hook_command()
+            try:
+                cursor_change = route.apply_cursor_hooks(command, scope=scope, path=settings_file)
+            except ValueError as exc:
+                typer.secho(f"Could not edit the hooks file: {exc}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(1) from exc
+            typer.secho(
+                f"Installed privacy-kit Cursor hooks in {cursor_change.path}.",
+                fg=typer.colors.GREEN,
+            )
+            typer.echo(f"  Events: {', '.join(cursor_change.events)} (runs: {command} <event>)")
+            typer.echo(
+                "  These audit Composer/agent/inline-edit flows that bypass the gateway "
+                "base URL. Keep `privacy-kit serve` running; set PII_CURSOR_BLOCK=1 to deny "
+                "submissions that contain PII (hooks can't redact). Undo with: "
+                f"privacy-kit setup cursor --remove --scope {scope}"
+            )
+            typer.echo("")
+            typer.echo(_setup_text(tool, base))
+            return
+        if remove:
+            cleaned = route.remove_cursor_hooks(scope=scope, path=settings_file)
+            path = settings_file or route.cursor_hooks_path(scope)
+            if not cleaned:
+                typer.echo(f"No privacy-kit Cursor hooks found in {path}; nothing to do.")
+            else:
+                typer.secho(
+                    f"Removed privacy-kit Cursor hooks ({', '.join(cleaned)}) from {path}.",
+                    fg=typer.colors.GREEN,
+                )
+            return
         typer.echo(_setup_text(tool, base))
         return
 
@@ -258,12 +300,35 @@ def _setup_text(tool: str, base: str) -> str:
         )
     # cursor
     return (
-        "# Route Cursor's chat panel through privacy-kit (Settings → Models):\n"
-        f"#   Override OpenAI Base URL:  {base}/v1\n"
-        "#   OpenAI API Key:            <your OpenAI API key>\n"
-        "# Note: only Cursor's chat/plan panel honors this; Composer, inline\n"
-        "# edit, and autocomplete are locked to Cursor's own backend.\n"
+        "# Cursor needs two layers — its surfaces sit on two backends.\n"
+        "#\n"
+        "# 1. Chat/plan panel — the ONE surface the gateway can pseudonymize.\n"
+        "#    Settings → Models → Override OpenAI Base URL:\n"
+        f"#      Override OpenAI Base URL:  {base}/v1\n"
+        "#      OpenAI API Key:            <your OpenAI API key>\n"
+        "#    Run the gateway with PII_POLICY=pseudonymize and its prompts are\n"
+        "#    redacted and rehydrated, exactly like Claude Code / Codex.\n"
+        "#\n"
+        "# 2. Composer, the agent loop, inline edit (Cmd+K), Apply, and Tab stay on\n"
+        "#    Cursor's own backend and bypass the base URL — they can't be redacted.\n"
+        "#    Cover them with Cursor hooks (audit; optional block on PII):\n"
+        "#      privacy-kit setup cursor --apply                  # ~/.cursor/hooks.json\n"
+        "#      privacy-kit setup cursor --apply --scope project  # .cursor/hooks.json\n"
+        "#      PII_CURSOR_BLOCK=1 privacy-kit serve              # deny prompts with PII\n"
     )
+
+
+def _cursor_hook_command() -> str:
+    """The base command Cursor should run for our hooks (event name appended).
+
+    Resolves to an absolute path at apply time so it works regardless of the PATH
+    Cursor spawns hooks with. Falls back to ``python -m privacy_kit`` when the
+    console script isn't found on PATH.
+    """
+    exe = shutil.which("privacy-kit")
+    if exe:
+        return f"{shlex.quote(exe)} hook cursor"
+    return f"{shlex.quote(sys.executable)} -m privacy_kit hook cursor"
 
 
 @app.command()
@@ -329,6 +394,46 @@ def scan(
     for span in spans:
         snippet = span.text_of(text).replace("\n", " ")
         typer.echo(f"  {span.label:<28} {span.score:.2f}  {snippet!r}")
+
+
+@app.command()
+def hook(
+    tool: str = typer.Argument(..., help="Hook source tool (only 'cursor')."),
+    event: str = typer.Argument(..., help="Cursor hook event name, e.g. beforeSubmitPrompt."),
+) -> None:
+    """Cursor hook handler: scan one hook event via the running gateway.
+
+    Reads the hook JSON from stdin, forwards it to the local gateway's
+    /v1/cursor-hook, and prints the gateway's decision to stdout. Fails OPEN — if
+    the gateway isn't running (or anything goes wrong), it allows the action so an
+    absent privacy-kit never blocks Cursor. Installed by `setup cursor --apply`.
+    """
+    import json
+
+    raw = sys.stdin.read()
+    # The shape Cursor expects when the action is permitted, by event kind.
+    allow = '{"permission": "allow"}' if event == "beforeReadFile" else '{"continue": true}'
+    if tool != "cursor":
+        typer.echo(allow)
+        return
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        payload = {}
+    if isinstance(payload, dict):
+        payload.setdefault("hook_event_name", event)
+
+    from privacy_kit.gateway.config import get_settings
+
+    settings = get_settings()
+    url = f"http://{settings.host}:{settings.port}/v1/cursor-hook"
+    try:
+        import httpx
+
+        response = httpx.post(url, json=payload, timeout=15.0)
+        typer.echo(response.text if response.status_code == 200 else allow)
+    except Exception:
+        typer.echo(allow)  # gateway down / unreachable: never wedge Cursor
 
 
 if __name__ == "__main__":

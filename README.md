@@ -24,9 +24,12 @@ make run      # install deps + start the gateway on http://127.0.0.1:8787
 ```
 
 Then start a **new** tool session and open `http://127.0.0.1:8787/ui` to see
-detected PII and the before/after text. (Cursor is routed from its own Settings
-UI — run `privacy-kit setup cursor` for instructions.) Undo routing with
-`privacy-kit setup claude-code --remove` / `privacy-kit setup codex --remove`.
+detected PII and the before/after text. (Cursor takes two steps: point its chat
+panel's base URL at the gateway in Settings → Models to pseudonymize that panel,
+and run `privacy-kit setup cursor --apply` to install hooks that audit the
+Composer/agent surfaces the base URL can't reach.) Undo routing with
+`privacy-kit setup claude-code --remove` / `privacy-kit setup codex --remove` /
+`privacy-kit setup cursor --remove`.
 
 ## Install
 
@@ -132,7 +135,8 @@ privacy-kit setup claude-code --apply  # route Claude Code persistently (no manu
 privacy-kit setup claude-code --remove # undo the persistent routing
 privacy-kit setup codex --apply        # route Codex persistently (edits ~/.codex/config.toml)
 privacy-kit setup codex --remove       # undo the Codex routing
-privacy-kit setup cursor               # ... or Cursor's chat panel (manual; print instructions)
+privacy-kit setup cursor               # Cursor: chat-panel base URL (manual) + hooks help
+privacy-kit setup cursor --apply       # install Cursor hooks (audit Composer/agent; ~/.cursor/hooks.json)
 privacy-kit report                     # summarize the audit log
 privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 ```
@@ -164,8 +168,23 @@ mode: Codex tries a WebSocket first and falls back to HTTPS (the gateway routes
 the HTTPS call), and Codex's plugin/MCP "apps" panel is unaffected by the
 gateway, so it may log a harmless startup warning.
 
+**Cursor needs two layers**, because its surfaces sit on two backends. Only the
+**chat/plan panel** honors a custom OpenAI base URL — point it at the gateway
+(Settings → Models → Override OpenAI Base URL = `http://127.0.0.1:8787/v1`, plus
+your own OpenAI key) and, under `PII_POLICY=pseudonymize`, its prompts are redacted
+and rehydrated exactly like Claude Code / Codex. **Composer, the agent loop, inline
+edit (Cmd+K), Apply, and Tab stay on Cursor's own backend** and bypass that base URL
+entirely, so they cannot be pseudonymized. `privacy-kit setup cursor --apply` installs
+[Cursor hooks](https://cursor.com/docs/hooks) (`beforeSubmitPrompt`, `beforeReadFile`)
+into `~/.cursor/hooks.json` (`--scope project` for `.cursor/hooks.json`) so privacy-kit
+still **audits** those surfaces; hooks can only allow or deny, never rewrite, so set
+`PII_CURSOR_BLOCK=1` to **deny** a prompt or file read that contains PII. The hook is
+a thin client that calls the running gateway and **fails open** — if the gateway is
+down, Cursor is never blocked.
+
 Supported wire formats: Anthropic Messages (`/v1/messages`,
-`/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses.
+`/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses. Cursor
+hooks post to `/v1/cursor-hook`.
 
 The gateway also mounts an **OTLP/HTTP JSON sink** (`/v1/logs`, `/v1/traces`,
 `/v1/metrics`): telemetry is scrubbed one-way (observability data keeps the
@@ -306,7 +325,8 @@ The model is not bundled in the package. It is downloaded on first use and reuse
 | Claude Code | Ready | gateway: `privacy-kit setup claude-code` |
 | Codex (API key) | Ready | gateway: `privacy-kit setup codex --apply` |
 | Codex (ChatGPT subscription) | Experimental | gateway: `privacy-kit setup codex --apply` |
-| Cursor (chat panel) | Ready | gateway: `privacy-kit setup cursor` |
+| Cursor (chat panel) | Ready | gateway base URL: `privacy-kit setup cursor` (pseudonymizes) |
+| Cursor (Composer / agent) | Ready | hooks: `privacy-kit setup cursor --apply` (audit; block via `PII_CURSOR_BLOCK=1`) |
 | OpenTelemetry logs | Ready | gateway OTLP sink (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) |
 | Pydantic AI | Coming soon | Planned integration example |
 | OpenAI SDK | Coming soon | Planned in-process wrapper on `Vault` |

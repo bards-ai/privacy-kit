@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     prompt unchanged — real values reach the upstream LLM. "pseudonymize": replace
     PII with reversible placeholders before forwarding, and rehydrate the response."""
 
+    # --- Cursor hooks ---
+    cursor_block: bool = False
+    """When a Cursor hook (beforeSubmitPrompt/beforeReadFile) detects PII, deny the
+    action instead of only auditing it. Cursor hooks cannot rewrite text, so this is
+    the only way to stop PII reaching Cursor's backend from the surfaces that bypass
+    the gateway base URL (Composer, the agent loop, inline edit, Tab). Off by default
+    — monitor only: detect, record, and always allow."""
+
     # --- Proxy ---
     host: str = "127.0.0.1"
     port: int = 8787

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-all check lint type test test-model fmt setup setup-claude-code setup-codex setup-remove setup-claude-code-remove setup-codex-remove run serve clean docker-build docker-run
+.PHONY: help install install-all check lint type test test-model fmt setup setup-claude-code setup-codex setup-cursor setup-remove setup-claude-code-remove setup-codex-remove setup-cursor-remove run serve clean docker-build docker-run
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -27,8 +27,8 @@ test-model: ## Run the tests that download and exercise the real model
 	PII_RUN_MODEL_TESTS=1 uv run pytest tests/test_detect_model.py tests/test_vault.py \
 		tests/test_model_download.py tests/test_gateway_e2e.py tests/test_cli.py
 
-setup: setup-claude-code setup-codex ## One-time: route all supported tools through the gateway (Claude Code + Codex)
-	@echo "Cursor is configured in its own Settings UI: uv run privacy-kit setup cursor"
+setup: setup-claude-code setup-codex setup-cursor ## One-time: route all supported tools through the gateway (Claude Code + Codex + Cursor hooks)
+	@echo "Cursor chat-panel pseudonymization is set in its Settings UI: uv run privacy-kit setup cursor"
 
 setup-claude-code: ## Route Claude Code through the gateway (edits ~/.claude/settings.json)
 	uv run privacy-kit setup claude-code --apply
@@ -36,13 +36,19 @@ setup-claude-code: ## Route Claude Code through the gateway (edits ~/.claude/set
 setup-codex: ## Route Codex through the gateway (edits ~/.codex/config.toml)
 	uv run privacy-kit setup codex --apply
 
-setup-remove: setup-claude-code-remove setup-codex-remove ## Undo: stop routing all supported tools through the gateway
+setup-cursor: ## Install Cursor hooks to audit Composer/agent (edits ~/.cursor/hooks.json)
+	uv run privacy-kit setup cursor --apply
+
+setup-remove: setup-claude-code-remove setup-codex-remove setup-cursor-remove ## Undo: stop routing all supported tools through the gateway
 
 setup-claude-code-remove: ## Undo the Claude Code routing
 	uv run privacy-kit setup claude-code --remove
 
 setup-codex-remove: ## Undo the Codex routing
 	uv run privacy-kit setup codex --remove
+
+setup-cursor-remove: ## Remove the Cursor hooks
+	uv run privacy-kit setup cursor --remove
 
 run: install serve ## One-liner: install deps then run the gateway proxy
 
