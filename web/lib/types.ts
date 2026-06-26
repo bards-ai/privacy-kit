@@ -83,10 +83,13 @@ export interface TextsResponse {
   redacted: boolean;
 }
 
+export type Policy = "monitor" | "pseudonymize";
+export type SaveTexts = "anonymized" | "all";
+
 export interface AppConfig {
   version: string;
-  policy: string;
-  save_texts: string;
+  policy: Policy;
+  save_texts: SaveTexts;
   expose_plaintext: boolean;
   model_id: string;
   threshold: number;

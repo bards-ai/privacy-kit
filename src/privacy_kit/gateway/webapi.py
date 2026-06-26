@@ -20,7 +20,7 @@ import csv
 import io
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -34,6 +34,21 @@ from privacy_kit.gateway.store import AuditStore
 from privacy_kit.gateway.store.models import Detection, Interaction, InteractionText
 
 _MAX_PREVIEW_CHARS = 50_000
+
+# Allowed values for the runtime-modifiable Literal settings, kept in sync with
+# the ``Settings`` annotations so the API can't drift from the config.
+_ALLOWED_POLICIES: frozenset[str] = frozenset(get_args(Settings.model_fields["policy"].annotation))
+_ALLOWED_SAVE_TEXTS: frozenset[str] = frozenset(
+    get_args(Settings.model_fields["save_texts"].annotation)
+)
+
+# The settings the dashboard may change at runtime. Everything here is
+# operator-level (deployment-wide), never per-end-user, so this set doubles as
+# the authorization scope for the future multi-user admin gate: when auth lands,
+# the PATCH endpoint below is the single place to require admin. Settings absent
+# here (model_id, db_path, host, port, cors_origins) can't change without a
+# restart and stay env-only.
+_EDITABLE_SETTINGS: frozenset[str] = frozenset({"policy", "save_texts", "threshold"})
 
 
 def run_preview(detector: Detector, text: str) -> dict[str, Any]:
@@ -130,26 +145,89 @@ def register_webapi_routes(
     async def api_filters() -> JSONResponse:
         return JSONResponse(store.distinct_values())
 
+    def _config_payload() -> dict[str, Any]:
+        # Non-secret runtime configuration for the settings/about page.
+        return {
+            "version": __version__,
+            "policy": cfg.policy,
+            "save_texts": cfg.save_texts,
+            "expose_plaintext": cfg.expose_plaintext,
+            "model_id": cfg.model_id,
+            "threshold": cfg.threshold,
+            "db_path": str(cfg.db_path),
+            "host": cfg.host,
+            "port": cfg.port,
+            "anthropic_upstream": cfg.anthropic_upstream,
+            "openai_upstream": cfg.openai_upstream,
+            "chatgpt_upstream": cfg.chatgpt_upstream,
+            "otel_downstream": cfg.otel_downstream,
+        }
+
     @app.get("/api/v1/config")
     async def api_config() -> JSONResponse:
-        # Non-secret runtime configuration for the settings/about page.
-        return JSONResponse(
-            {
-                "version": __version__,
-                "policy": cfg.policy,
-                "save_texts": cfg.save_texts,
-                "expose_plaintext": cfg.expose_plaintext,
-                "model_id": cfg.model_id,
-                "threshold": cfg.threshold,
-                "db_path": str(cfg.db_path),
-                "host": cfg.host,
-                "port": cfg.port,
-                "anthropic_upstream": cfg.anthropic_upstream,
-                "openai_upstream": cfg.openai_upstream,
-                "chatgpt_upstream": cfg.chatgpt_upstream,
-                "otel_downstream": cfg.otel_downstream,
-            }
-        )
+        return JSONResponse(_config_payload())
+
+    def _normalize_setting(field: str, value: Any) -> Any:
+        """Validate one incoming setting, returning the value to apply. Raises
+        ``ValueError`` with a user-facing message on bad input."""
+        if field == "policy":
+            if value not in _ALLOWED_POLICIES:
+                raise ValueError(f"policy must be one of {sorted(_ALLOWED_POLICIES)}")
+            return value
+        if field == "save_texts":
+            if value not in _ALLOWED_SAVE_TEXTS:
+                raise ValueError(f"save_texts must be one of {sorted(_ALLOWED_SAVE_TEXTS)}")
+            return value
+        if field == "threshold":
+            # bool is an int subclass; reject it so true/false can't pass as 0/1.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("threshold must be a number between 0.0 and 1.0")
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("threshold must be between 0.0 and 1.0")
+            return float(value)
+        raise ValueError(f"unknown setting {field!r}")
+
+    def _apply_setting(field: str, value: Any) -> None:
+        setattr(cfg, field, value)
+        # threshold is baked into the detector at construction, so update the
+        # live instance too; it's read per detection (BardsAiOnnxDetector reads
+        # self.threshold when filtering spans).
+        if field == "threshold":
+            detector.threshold = value  # type: ignore[attr-defined]
+
+    @app.patch("/api/v1/config")
+    async def api_update_config(request: Request) -> JSONResponse:
+        # Runtime-modifiable, operator-level settings (see _EDITABLE_SETTINGS).
+        # The proxy and detector read these per request off the shared objects
+        # mutated here, so changes take effect immediately for subsequent
+        # traffic. Changes are in-memory only and reset to the PII_* env/.env
+        # values on restart. This endpoint is the single choke point for a future
+        # multi-user admin-auth gate.
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "expected a JSON body"}, status_code=400)
+        editable = sorted(_EDITABLE_SETTINGS)
+        if not isinstance(body, dict) or not body:
+            return JSONResponse(
+                {"error": f"expected a JSON object with one or more of {editable}"},
+                status_code=400,
+            )
+        unknown = set(body) - _EDITABLE_SETTINGS
+        if unknown:
+            return JSONResponse(
+                {"error": f"unknown or read-only setting(s): {sorted(unknown)}"},
+                status_code=400,
+            )
+        # Validate everything before applying anything, so a bad value can't
+        # leave a partial update.
+        try:
+            normalized = {field: _normalize_setting(field, value) for field, value in body.items()}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        for field, value in normalized.items():
+            _apply_setting(field, value)
+        return JSONResponse(_config_payload())
 
     @app.get("/api/v1/texts")
     async def api_texts(

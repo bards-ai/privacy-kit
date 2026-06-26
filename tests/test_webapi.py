@@ -250,6 +250,73 @@ def test_config_endpoint_exposes_runtime_settings(tmp_path: Path) -> None:
     assert "model_id" in data
 
 
+def test_config_patch_updates_policy(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor")
+    store = AuditStore(tmp_path / "audit.sqlite")
+    client = TestClient(create_app(detector=LiteralDetector(PII), store=store, settings=settings))
+
+    res = client.patch("/api/v1/config", json={"policy": "pseudonymize"})
+    assert res.status_code == 200
+    assert res.json()["policy"] == "pseudonymize"
+    # The same settings object the proxy reads per request is mutated, so the
+    # change takes effect for subsequent traffic.
+    assert settings.policy == "pseudonymize"
+    assert client.get("/api/v1/config").json()["policy"] == "pseudonymize"
+
+
+def test_config_patch_updates_save_texts(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, save_texts="all")
+    store = AuditStore(tmp_path / "audit.sqlite")
+    client = TestClient(create_app(detector=LiteralDetector(PII), store=store, settings=settings))
+
+    res = client.patch("/api/v1/config", json={"save_texts": "anonymized"})
+    assert res.status_code == 200
+    assert res.json()["save_texts"] == "anonymized"
+    assert settings.save_texts == "anonymized"
+
+
+def test_config_patch_updates_threshold_on_settings_and_detector(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, threshold=0.5)
+    detector = LiteralDetector(PII)
+    store = AuditStore(tmp_path / "audit.sqlite")
+    client = TestClient(create_app(detector=detector, store=store, settings=settings))
+
+    res = client.patch("/api/v1/config", json={"threshold": 0.8})
+    assert res.status_code == 200
+    assert res.json()["threshold"] == 0.8
+    assert settings.threshold == 0.8
+    # The live detector is updated too, since threshold is read per detection.
+    assert detector.threshold == 0.8
+
+
+def test_config_patch_updates_multiple_settings_atomically(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor", save_texts="all")
+    store = AuditStore(tmp_path / "audit.sqlite")
+    client = TestClient(create_app(detector=LiteralDetector(PII), store=store, settings=settings))
+
+    res = client.patch(
+        "/api/v1/config", json={"policy": "pseudonymize", "save_texts": "anonymized"}
+    )
+    assert res.status_code == 200
+    assert (settings.policy, settings.save_texts) == ("pseudonymize", "anonymized")
+
+
+def test_config_patch_rejects_bad_values(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, policy="monitor")
+    store = AuditStore(tmp_path / "audit.sqlite")
+    client = TestClient(create_app(detector=LiteralDetector(PII), store=store, settings=settings))
+
+    assert client.patch("/api/v1/config", json={"policy": "delete-everything"}).status_code == 400
+    assert client.patch("/api/v1/config", json={"save_texts": "everything"}).status_code == 400
+    assert client.patch("/api/v1/config", json={"threshold": 1.5}).status_code == 400
+    assert client.patch("/api/v1/config", json={"threshold": "high"}).status_code == 400
+    assert client.patch("/api/v1/config", json={"threshold": True}).status_code == 400
+    # Unknown / read-only settings are rejected, and nothing is mutated.
+    assert client.patch("/api/v1/config", json={"db_path": "/etc/passwd"}).status_code == 400
+    assert client.patch("/api/v1/config", json={}).status_code == 400
+    assert settings.policy == "monitor"
+
+
 def test_texts_browser_lists_segments(tmp_path: Path) -> None:
     client, store = build(tmp_path)
     seed(store)

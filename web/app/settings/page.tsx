@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
 import { ClearLog } from "@/components/clear-log";
+import { PolicySelect, SaveTextsSelect, ThresholdInput } from "@/components/config-controls";
 import { ExportMenu } from "@/components/interactions-controls";
-import { PolicyBadge } from "@/components/policy-badge";
 import { Card, CardContent, CardHeader, CardTitle, ConnectionError, PageHeader } from "@/components/ui";
 import { apiGetOr } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
@@ -59,12 +59,16 @@ export default async function SettingsPage() {
           </CardHeader>
           <CardContent>
             <Row label="Policy">
-              <PolicyBadge policy={config.policy} />
+              <PolicySelect policy={config.policy} />
             </Row>
-            <Row label="Save texts">{config.save_texts}</Row>
+            <Row label="Save texts">
+              <SaveTextsSelect value={config.save_texts} />
+            </Row>
+            <Row label="Threshold">
+              <ThresholdInput value={config.threshold} />
+            </Row>
             <Row label="Expose plaintext">{config.expose_plaintext ? "yes" : "no (redacted)"}</Row>
             <Row label="Model">{config.model_id}</Row>
-            <Row label="Threshold">{config.threshold}</Row>
           </CardContent>
         </Card>
 
@@ -107,8 +111,10 @@ export default async function SettingsPage() {
       </div>
 
       <p className="mt-6 text-xs text-muted-foreground">
-        These values come from the gateway&apos;s environment (PII_* variables / .env). Change them
-        there and restart the gateway to take effect.
+        These values come from the gateway&apos;s environment (PII_* variables / .env). Policy, save
+        texts, and threshold can be changed here at runtime — they apply to subsequent traffic but
+        reset to their PII_* values on restart. The remaining values require editing the environment
+        and restarting the gateway.
       </p>
     </>
   );
