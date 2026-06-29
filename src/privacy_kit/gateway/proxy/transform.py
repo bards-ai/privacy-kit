@@ -49,15 +49,17 @@ AnonFn = Callable[[str, "Author", bool], str]  # public transform callback type
 class Author(Enum):
     """Origin classification for a text segment passed to the ``anon`` callback."""
 
-    USER = auto()     # human-typed message text
-    TOOL = auto()     # tool/file output (data the user's local tools produced)
+    USER = auto()  # human-typed message text
+    TOOL = auto()  # tool/file output (data the user's local tools produced)
     MACHINE = auto()  # system prompts, instructions, assistant turns, tool-call args
 
 
 def _bind(anon: AnonFn, author: Author, novel: bool) -> TextFn:
     """Return a simple ``str -> str`` that fixes ``author`` and ``novel``."""
+
     def fn(text: str) -> str:
         return anon(text, author, novel)
+
     return fn
 
 
@@ -65,9 +67,11 @@ def _user_text(anon: AnonFn, novel: bool) -> TextFn:
     """Like ``_bind(anon, Author.USER, novel)`` but downgrades harness-injected
     system blocks (see ``_is_injected_system_text``) to MACHINE so they are
     anonymized for upstream yet never saved."""
+
     def fn(text: str) -> str:
         author = Author.MACHINE if _is_injected_system_text(text) else Author.USER
         return anon(text, author, novel)
+
     return fn
 
 
@@ -148,7 +152,7 @@ def _is_injected_system_text(text: str) -> bool:
 def _anon_preserving_identifier(text: str, fn: TextFn) -> str:
     """Anonymize ``text`` while keeping a leading Claude Code identifier verbatim."""
     if text.startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER):
-        rest = text[len(CLAUDE_CODE_SYSTEM_IDENTIFIER):]
+        rest = text[len(CLAUDE_CODE_SYSTEM_IDENTIFIER) :]
         return CLAUDE_CODE_SYSTEM_IDENTIFIER + (fn(rest) if rest else "")
     return fn(text)
 

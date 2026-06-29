@@ -1,0 +1,48 @@
+# privacy-kit — full stack: the FastAPI gateway (api) + the Next.js dashboard (web).
+#
+#   make setup    # build both images
+#   make run      # start both; dashboard at http://127.0.0.1:3000
+#
+# Only the dashboard and the gateway port are published, and only to localhost.
+# The browser talks to the dashboard; the dashboard talks to the gateway over the
+# internal network (API_URL), so the gateway API is never exposed to the browser.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: privacy-kit-api
+    environment:
+      # Inside the container the gateway must bind 0.0.0.0 to be reachable.
+      PII_HOST: 0.0.0.0
+      PII_DB_PATH: /data/privacy_kit.sqlite
+      # Default policy is "monitor" (detect + log, forward originals). Uncomment
+      # to pseudonymize before forwarding instead:
+      # PII_POLICY: pseudonymize
+      # For a hosted/multi-user deployment, redact stored originals in the API:
+      # PII_EXPOSE_PLAINTEXT: "false"
+    volumes:
+      - privacy-kit-data:/data
+    ports:
+      - "127.0.0.1:8787:8787"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+    image: privacy-kit-web
+    environment:
+      # Server-side only: how the dashboard reaches the gateway on the internal
+      # network. The browser never sees this.
+      API_URL: http://api:8787
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+volumes:
+  privacy-kit-data:

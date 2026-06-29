@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     otel_downstream: str | None = None
     """If set, scrubbed OTLP payloads are re-exported to this collector base URL."""
 
+    # --- Web dashboard API ---
+    cors_origins: list[str] = []
+    """Browser origins allowed to call the JSON API directly (CORS). Empty by
+    default: the bundled dashboard proxies requests server-side, so the browser
+    is same-origin and no CORS is needed. Set ``PII_CORS_ORIGINS`` (a JSON array,
+    e.g. ``["http://localhost:3000"]``) only when serving the frontend from a
+    different origin during host development."""
+
+    expose_plaintext: bool = True
+    """Whether the dashboard API may return the raw ``original`` text held in
+    ``interactiontext``. True (default) preserves the local single-user
+    experience. Set ``PII_EXPOSE_PLAINTEXT=false`` for a hosted/multi-user
+    deployment so originals are redacted in API responses."""
+
 
 def get_settings() -> Settings:
     """Return the process-wide settings instance."""

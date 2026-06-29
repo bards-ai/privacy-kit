@@ -16,20 +16,25 @@ trust boundary. There are two operations and two deployment modes:
 
 ## Quick start
 
-Route your AI tools through the local privacy gateway in two commands:
+Spin up the local privacy gateway **and** its web dashboard with Docker:
 
 ```bash
-make setup    # one-time: route Claude Code + Codex through the gateway
-make run      # install deps + start the gateway on http://127.0.0.1:8787
+make setup    # build the gateway + dashboard images (Docker)
+make run      # start both — dashboard on http://127.0.0.1:3000, gateway on :8787
+make route    # one-time: route Claude Code + Codex through the gateway
 ```
 
-Then start a **new** tool session and open `http://127.0.0.1:8787/ui` to see
-detected PII and the before/after text. (Cursor takes two steps: point its chat
-panel's base URL at the gateway in Settings → Models to pseudonymize that panel,
-and run `privacy-kit setup cursor --apply` to install hooks that audit the
+Open **http://127.0.0.1:3000** for the dashboard: overview charts, the full
+interaction log (filter / sort / search / export), per-interaction detail with
+the before/after text, and a live PII preview. Start a **new** tool session
+after `make route` so its traffic flows through the gateway. (Cursor takes two
+steps: point its chat panel's base URL at the gateway in Settings → Models to
+pseudonymize that panel, and `make route-cursor` installs hooks that audit the
 Composer/agent surfaces the base URL can't reach.) Undo routing with
-`privacy-kit setup claude-code --remove` / `privacy-kit setup codex --remove` /
-`privacy-kit setup cursor --remove`.
+`make route-remove`.
+
+Only Docker is needed on the host. Prefer a non-Docker loop? `make serve` runs
+just the gateway, and `make dev` runs the gateway plus the dashboard in dev mode.
 
 ## Install
 
@@ -141,12 +146,14 @@ privacy-kit report                     # summarize the audit log
 privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
 ```
 
-While the gateway runs, a **PII preview UI** is served at
-`http://127.0.0.1:8787/ui`: paste any text to see detected spans highlighted by
-entity type next to the pseudonymized version that would leave your machine,
-and browse the audit log (totals by type, recent interactions).
-The page is a single inline file — no external assets, no CDN — and the live
-preview is processed in memory only: never stored, logged, or audited.
+While the gateway runs, the **web dashboard** (`make run`, then
+`http://127.0.0.1:3000`) shows the full audit log: overview charts, every
+interaction with filtering / sorting / search, per-interaction detail with the
+before/after text, CSV/JSON export, delete and clear actions, and a live PII
+preview processed in memory only (never stored, logged, or audited). It ships no
+external assets and pulls nothing from a CDN. The gateway also still serves a
+minimal single-file preview at `http://127.0.0.1:8787/ui` for the no-dashboard
+case.
 
 No manual `export` needed for Claude Code: `--apply` (or `serve --route
 claude-code`) writes `ANTHROPIC_BASE_URL` into the `env` block of
@@ -191,7 +198,14 @@ The gateway also mounts an **OTLP/HTTP JSON sink** (`/v1/logs`, `/v1/traces`,
 placeholders), logs are audited, and scrubbed payloads can be re-exported to a
 downstream collector via `PII_OTEL_DOWNSTREAM`.
 
-Run it in Docker (model baked in at build time, no torch):
+Run the whole stack (gateway + dashboard) in Docker — only Docker is needed on
+the host (the model is baked into the gateway image at build time, no torch):
+
+```bash
+make setup && make run     # docker compose build + up
+```
+
+Or run just the gateway image on its own:
 
 ```bash
 docker build -t privacy-kit .
