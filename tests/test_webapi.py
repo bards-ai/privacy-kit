@@ -18,8 +18,9 @@ from privacy_kit.gateway.store import AuditStore
 
 
 class LiteralDetector:
-    def __init__(self, mapping: dict[str, str]) -> None:
+    def __init__(self, mapping: dict[str, str], threshold: float = 0.5) -> None:
         self.mapping = mapping
+        self.threshold = threshold
 
     def detect(self, text: str) -> list[Span]:
         spans: list[Span] = []
