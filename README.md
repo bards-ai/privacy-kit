@@ -1,4 +1,4 @@
-# privacy-kit
+# Privacy Kit
 
 Ready-to-use privacy blocks for LLM apps, observability pipelines, and AI
 tools, powered by
