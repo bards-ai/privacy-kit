@@ -14,29 +14,97 @@ trust boundary. There are two operations and two deployment modes:
 | **Data is stored / observed** → redact, one-way | `Redactor`, Langfuse mask, LangChain callback | OTLP sink scrubbing telemetry |
 | **Data is in a live LLM loop** → pseudonymize, reversible | `Vault` (`anonymize` / `deanonymize`) | **Gateway** for Claude Code, Codex, Cursor |
 
-## Quick start
+## The Gateway — a local proxy that scrubs PII on the LLM request path
 
-Spin up the local privacy gateway **and** its web dashboard with Docker:
+A local proxy for Claude Code, Codex, and Cursor — tools you can't add a mask callback to, but that all honor a `*_BASE_URL` override. It sits on that path, detects PII, and (optionally) replaces values with `[TYPE_N]` placeholders before they leave your machine, rehydrating the response on the way back.
+
+### Quick start
+
+**Docker** (gateway + dashboard — only Docker needed on the host; model baked into the image at build time):
 
 ```bash
-make setup    # build the gateway + dashboard images (Docker)
-make run      # start both — dashboard on http://127.0.0.1:3000, gateway on :8787
-make route    # one-time: route Claude Code + Codex through the gateway
+make setup
+make route             # route Claude Code + Codex
+make run   # dashboard → http://127.0.0.1:3000, gateway → :8787
 ```
 
-Open **http://127.0.0.1:3000** for the dashboard: overview charts, the full
-interaction log (filter / sort / search / export), per-interaction detail with
-the before/after text, and a live PII preview. Start a **new** tool session
-after `make route` so its traffic flows through the gateway. (Cursor takes two
-steps: point its chat panel's base URL at the gateway in Settings → Models to
-pseudonymize that panel, and `make route-cursor` installs hooks that audit the
-Composer/agent surfaces the base URL can't reach.) Undo routing with
-`make route-remove`.
 
-Only Docker is needed on the host. Prefer a non-Docker loop? `make serve` runs
-just the gateway, and `make dev` runs the gateway plus the dashboard in dev mode.
+Open **http://127.0.0.1:3000**. Start a **new** tool session after routing. For Cursor, also set the chat panel base URL in Settings → Models (`privacy-kit setup cursor` prints the value). Undo with `make route-remove` or `privacy-kit setup … --remove`.
 
-## Install
+### How it works
+
+```
+                  ┌─────────────────────────────┐
+   request        │     privacy-kit gateway     │     sanitized* request
+    with    ─────▶│     detect PII + audit      │─────▶   sent to the
+    PII           │     pseudonymize*           │         real LLM API
+                  │                             │
+   response       │                             │     response with
+    real    ◀─────│     rehydrate*              │◀─────   placeholders
+   values         └─────────────────────────────┘
+                        * enforce mode only (PII_POLICY=pseudonymize)
+```
+
+
+Claude Code, Codex, and Cursor send your prompts (and file reads) to cloud LLMs — you can't add a mask callback, but they all honor a `*_BASE_URL` override. The gateway is a local proxy on that path: it detects PII, writes an audit row, and — in **enforce** mode (`PII_POLICY=pseudonymize`) — replaces values with `[TYPE_N]` placeholders before they leave your machine, rehydrating the response on the way back (streaming included). The default **monitor** mode only detects and logs; the prompt is forwarded unchanged. Your auth passes through untouched, and every routed tool's interactions land in the same shared [audit log](#dashboard).
+
+Start the gateway first (loads the on-device model, listens on `127.0.0.1:8787`), then route each tool through it:
+
+```bash
+privacy-kit serve            # start the gateway
+privacy-kit report           # summarize the audit log
+privacy-kit scan secrets.txt # one-off detection; --anonymize to mask
+```
+
+#### Claude Code
+
+Routes via `ANTHROPIC_BASE_URL` in `~/.claude/settings.json` (applies to **new** sessions). A Claude Max/Pro **subscription works with no API key** — the gateway forwards your OAuth token and preserves Claude Code's system identifier. (If your version won't send that token to a custom base URL, run `claude setup-token` once.)
+
+```bash
+privacy-kit setup claude-code --apply   # route persistently   (undo: --remove)
+privacy-kit serve --route claude-code   # only while the gateway runs (auto-restores)
+# make route-claude-code / make route-claude-code-remove
+```
+
+#### Codex
+
+`setup codex --apply` adds a dedicated `[model_providers.privacy-kit]` table to `~/.codex/config.toml` and selects it with `model_provider = "privacy-kit"`. It sets `supports_websockets = false` so Codex sends plain HTTP the gateway can sanitize (instead of its default WebSocket transport). Works in **both** auth modes from one setting: a ChatGPT-account login (no API key — experimental) or an API key.
+
+```bash
+privacy-kit setup codex --apply   # route persistently   (undo: --remove)
+# make route-codex / make route-codex-remove
+```
+
+#### Cursor
+
+Cursor's surfaces sit on two backends, so it needs two layers:
+
+1. **Chat/plan panel** — the only surface the gateway can pseudonymize. Set it manually: Settings → Models → Override OpenAI Base URL = `http://127.0.0.1:8787/v1` plus your OpenAI key (`privacy-kit setup cursor` prints these).
+2. **Composer, agent loop, inline edit (Cmd+K), Apply, Tab** bypass that base URL, so they **can't** be pseudonymized — only audited via [Cursor hooks](https://cursor.com/docs/hooks). Hooks can't rewrite, only allow/deny: set `PII_CURSOR_BLOCK=1` to deny PII (fails open if the gateway is down).
+
+```bash
+privacy-kit setup cursor --apply                  # install hooks in ~/.cursor/hooks.json
+privacy-kit setup cursor --apply --scope project  # ...in .cursor/hooks.json instead
+# undo: --remove  ·  make route-cursor / make route-cursor-remove
+```
+
+`make route` / `make route-remove` apply or undo all three at once.
+
+### Dashboard
+
+While the gateway runs, the **web dashboard** — a self-contained JS web UI (`make run` or `make dev`, then `http://127.0.0.1:3000`) — shows the shared audit log for all three tools: overview charts, per-interaction before/after text, filter / sort / search, CSV/JSON export, delete/clear, and an in-memory live PII preview (never stored). No external assets, no CDN.
+
+### Wire formats and telemetry
+
+Supported wire formats: Anthropic Messages (`/v1/messages`, `/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses. Cursor hooks post to `/v1/cursor-hook`.
+
+
+## In-process library
+
+Use these blocks when you own the code path — Langfuse callbacks, LangChain
+agents, direct redaction, or a `Vault` in your own LLM loop.
+
+### Install
 
 ```bash
 pip install privacy-kit                # library blocks (ONNX, no torch)
@@ -50,7 +118,7 @@ The default install uses a local ONNX backend:
 - model downloaded from Hugging Face on first use
 - model cached locally by `huggingface-hub`
 
-## Langfuse In One Line
+### Langfuse In One Line
 
 If you already use Langfuse, pass `make_mask()` to the Langfuse client:
 
@@ -61,11 +129,13 @@ from privacy_kit.integrations.langfuse import make_mask
 langfuse = Langfuse(mask=make_mask())
 ```
 
-`make_mask()` recursively scans every string Langfuse sends through the mask callback, including nested `input`, `output`, `metadata`, `messages`, tool calls, reasoning fields, and custom JSON fields.
+`make_mask()` recursively scans every string Langfuse sends through the mask
+callback, including nested `input`, `output`, `metadata`, `messages`, tool calls,
+reasoning fields, and custom JSON fields.
 
 By default, you do not need to configure field paths. Everything text-like is scanned.
 
-## LangGraph / LangChain
+### LangGraph / LangChain
 
 LangChain agents are LangGraph-backed. Install the LangChain extra:
 
@@ -100,119 +170,11 @@ agent.invoke(
 )
 ```
 
-The callback protects LangChain/LangGraph payloads before they are exported to Langfuse. This includes nested message objects and metadata that LangChain passes through callback events.
+The callback protects LangChain/LangGraph payloads before they are exported to
+Langfuse. This includes nested message objects and metadata that LangChain passes
+through callback events.
 
-## The Gateway — privacy for tools you can't modify
-
-Claude Code, Codex, and Cursor send your prompts (and your tools' file reads!)
-to cloud LLMs. You can't add a mask callback to them — but they all honor a
-`*_BASE_URL` override. The gateway is a local proxy that sits in that path:
-
-```
-AI tool ──> privacy-kit gateway ──> real LLM API
-            detect + audit
-            pseudonymize ──>  (enforce mode only)
-                          <── rehydrate
-```
-
-By default the gateway runs in **monitor** mode (`PII_POLICY=monitor`): for every
-request it detects PII and records an **audit row** — entity types and counts, plus
-the request text segments selected by `PII_SAVE_TEXTS` (original and the
-would-be-anonymized text, in plaintext in the local SQLite file) — but forwards the
-prompt **unchanged**, so the real values reach the upstream. Use it to see what
-privacy-kit would catch before turning on enforcement.
-
-Set `PII_POLICY=pseudonymize` to enforce: PII is replaced with `[TYPE_N]`
-placeholders before the text leaves your machine, the sanitized body is forwarded
-upstream with your own auth, and the real values are **rehydrated** into the
-response (streaming included — placeholders split across SSE chunks are buffered and
-restored). The audit row is written either way; `PII_SAVE_TEXTS=all` stores every
-eligible segment instead of only those where PII was found. Conversation history is
-re-sent by the tools each turn, so saved texts accumulate per turn — keep an eye on
-the DB size, especially with `all`.
-
-```bash
-pip install 'privacy-kit[gateway]'
-
-privacy-kit serve                      # loads the model, listens on 127.0.0.1:8787
-privacy-kit serve --route claude-code  # ...and auto-route Claude Code while it runs
-privacy-kit setup claude-code --apply  # route Claude Code persistently (no manual exports)
-privacy-kit setup claude-code --remove # undo the persistent routing
-privacy-kit setup codex --apply        # route Codex persistently (edits ~/.codex/config.toml)
-privacy-kit setup codex --remove       # undo the Codex routing
-privacy-kit setup cursor               # Cursor: chat-panel base URL (manual) + hooks help
-privacy-kit setup cursor --apply       # install Cursor hooks (audit Composer/agent; ~/.cursor/hooks.json)
-privacy-kit report                     # summarize the audit log
-privacy-kit scan secrets.txt           # one-off detection; --anonymize to mask
-```
-
-While the gateway runs, the **web dashboard** (`make run`, then
-`http://127.0.0.1:3000`) shows the full audit log: overview charts, every
-interaction with filtering / sorting / search, per-interaction detail with the
-before/after text, CSV/JSON export, delete and clear actions, and a live PII
-preview processed in memory only (never stored, logged, or audited). It ships no
-external assets and pulls nothing from a CDN. The gateway also still serves a
-minimal single-file preview at `http://127.0.0.1:8787/ui` for the no-dashboard
-case.
-
-No manual `export` needed for Claude Code: `--apply` (or `serve --route
-claude-code`) writes `ANTHROPIC_BASE_URL` into the `env` block of
-`~/.claude/settings.json` — the CLI prints exactly which file it overrides, the
-override applies to new Claude Code sessions, and `serve --route` restores the
-previous value on shutdown (a value you changed yourself in the meantime is
-never clobbered). Works with a Claude Max/Pro subscription — no API key
-required; the gateway forwards your OAuth login token and keeps Claude Code's
-system identifier intact so Anthropic accepts the request.
-
-`privacy-kit setup codex --apply` does the same for Codex, writing
-`openai_base_url` into `~/.codex/config.toml`. Codex routes its model call
-through that base URL in **both** auth modes, so one setting covers both: a
-ChatGPT-account login (free/Plus/Pro, **no API key** — experimental) and an API
-key. The gateway recognizes a subscription request by its `chatgpt-account-id`
-header and forwards it to chatgpt.com's backend with your login token untouched;
-an API-key request goes to api.openai.com. Known limitations of subscription
-mode: Codex tries a WebSocket first and falls back to HTTPS (the gateway routes
-the HTTPS call), and Codex's plugin/MCP "apps" panel is unaffected by the
-gateway, so it may log a harmless startup warning.
-
-**Cursor needs two layers**, because its surfaces sit on two backends. Only the
-**chat/plan panel** honors a custom OpenAI base URL — point it at the gateway
-(Settings → Models → Override OpenAI Base URL = `http://127.0.0.1:8787/v1`, plus
-your own OpenAI key) and, under `PII_POLICY=pseudonymize`, its prompts are redacted
-and rehydrated exactly like Claude Code / Codex. **Composer, the agent loop, inline
-edit (Cmd+K), Apply, and Tab stay on Cursor's own backend** and bypass that base URL
-entirely, so they cannot be pseudonymized. `privacy-kit setup cursor --apply` installs
-[Cursor hooks](https://cursor.com/docs/hooks) (`beforeSubmitPrompt`, `beforeReadFile`)
-into `~/.cursor/hooks.json` (`--scope project` for `.cursor/hooks.json`) so privacy-kit
-still **audits** those surfaces; hooks can only allow or deny, never rewrite, so set
-`PII_CURSOR_BLOCK=1` to **deny** a prompt or file read that contains PII. The hook is
-a thin client that calls the running gateway and **fails open** — if the gateway is
-down, Cursor is never blocked.
-
-Supported wire formats: Anthropic Messages (`/v1/messages`,
-`/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses. Cursor
-hooks post to `/v1/cursor-hook`.
-
-The gateway also mounts an **OTLP/HTTP JSON sink** (`/v1/logs`, `/v1/traces`,
-`/v1/metrics`): telemetry is scrubbed one-way (observability data keeps the
-placeholders), logs are audited, and scrubbed payloads can be re-exported to a
-downstream collector via `PII_OTEL_DOWNSTREAM`.
-
-Run the whole stack (gateway + dashboard) in Docker — only Docker is needed on
-the host (the model is baked into the gateway image at build time, no torch):
-
-```bash
-make setup && make run     # docker compose build + up
-```
-
-Or run just the gateway image on its own:
-
-```bash
-docker build -t privacy-kit .
-docker run --rm -p 127.0.0.1:8787:8787 -v privacy-kit-data:/data privacy-kit
-```
-
-## Direct Redaction
+### Direct Redaction
 
 Use `Redactor` directly if you want to redact text or arbitrary JSON-like payloads.
 
@@ -242,7 +204,7 @@ redactor.redact(
 # }
 ```
 
-## Reversible Pseudonymization
+### Reversible Pseudonymization
 
 When the consumer of the text still needs referential consistency — and you
 need the real values back — use a `Vault` instead of redacting:
@@ -267,7 +229,7 @@ This is the primitive the gateway is built on: an LLM can reason about
 `[PERSON_NAME_1]` consistently across a whole conversation, and the response
 is rehydrated before the user sees it.
 
-## Field Selection
+### Field Selection
 
 The default is intentionally broad: scan every string in the payload.
 
@@ -328,7 +290,8 @@ export PII_CHATGPT_UPSTREAM=https://chatgpt.com/backend-api  # Codex subscriptio
 export PII_OTEL_DOWNSTREAM=          # optional collector for scrubbed telemetry
 ```
 
-The model is not bundled in the package. It is downloaded on first use and reused from cache after that.
+The model is not bundled in the package. It is downloaded on first use and reused
+from cache after that.
 
 ## Supported Integrations
 
@@ -345,7 +308,9 @@ The model is not bundled in the package. It is downloaded on first use and reuse
 | Pydantic AI | Coming soon | Planned integration example |
 | OpenAI SDK | Coming soon | Planned in-process wrapper on `Vault` |
 
-Runnable examples live in [`examples/`](examples/). They are kept in the repository for copy-paste onboarding and are not installed as runtime package modules.
+Runnable examples live in [`examples/`](examples/). They are kept in the
+repository for copy-paste onboarding and are not installed as runtime package
+modules.
 
 ## What Gets Sent Where
 
@@ -368,7 +333,8 @@ and anonymized, in plaintext on your machine).
 
 ## Transformers Backend
 
-privacy-kit also keeps the original `PiiModel` API for label-preserving anonymization and direct entity extraction.
+privacy-kit also keeps the original `PiiModel` API for label-preserving
+anonymization and direct entity extraction.
 
 Install the optional Transformers backend:
 
@@ -404,7 +370,11 @@ model.extract_pii(text)
 # }
 ```
 
-Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or extracted PII mappings. The integration APIs use `[REDACTED]` by default because observability systems usually should not store the PII type either. For reversible, indexed placeholders prefer the `Vault` API above — it is idempotent and offset-exact.
+Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or
+extracted PII mappings. The integration APIs use `[REDACTED]` by default because
+observability systems usually should not store the PII type either. For
+reversible, indexed placeholders prefer the `Vault` API above — it is idempotent
+and offset-exact.
 
 ## Supported Entity Types
 
