@@ -3,10 +3,13 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useMemo } from "react";
 
+import { HighlightedText } from "@/components/interaction-detail-body";
 import { Card, CardContent, ConnectionError, EmptyState } from "@/components/ui";
 import { clientGet } from "@/lib/client-api";
 import { formatDateTime } from "@/lib/format";
+import { alignPii } from "@/lib/pii";
 import type { TextsResponse } from "@/lib/types";
 
 export function TextsLive({ initialData }: { initialData: TextsResponse }) {
@@ -24,6 +27,11 @@ export function TextsLive({ initialData }: { initialData: TextsResponse }) {
     initialData,
     refetchInterval: 5000,
   });
+
+  const aligned = useMemo(
+    () => data.texts.map((t) => alignPii(t.original, t.anonymized)),
+    [data.texts],
+  );
 
   if (isError) {
     return <ConnectionError message={error instanceof Error ? error.message : String(error)} />;
@@ -44,7 +52,7 @@ export function TextsLive({ initialData }: { initialData: TextsResponse }) {
         />
       ) : (
         <div className="space-y-3">
-          {data.texts.map((t) => (
+          {data.texts.map((t, i) => (
             <Card key={`${t.interaction_id}-${t.seq}`}>
               <CardContent className="pt-4">
                 <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -66,7 +74,11 @@ export function TextsLive({ initialData }: { initialData: TextsResponse }) {
                       Original
                     </div>
                     <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 text-sm">
-                      {t.original ?? <span className="text-muted-foreground">[redacted]</span>}
+                      {t.original === null ? (
+                        <span className="text-muted-foreground">[redacted]</span>
+                      ) : (
+                        <HighlightedText aligned={aligned[i]} view="original" />
+                      )}
                     </div>
                   </div>
                   <div>
@@ -74,7 +86,7 @@ export function TextsLive({ initialData }: { initialData: TextsResponse }) {
                       Anonymized
                     </div>
                     <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 font-mono text-sm">
-                      {t.anonymized}
+                      <HighlightedText aligned={aligned[i]} view="masked" />
                     </div>
                   </div>
                 </div>

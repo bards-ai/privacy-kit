@@ -36,7 +36,7 @@ function PiiToken({ span, show }: { span: PiiSpan; show: "value" | "placeholder"
 
 // Render aligned parts with PII spans highlighted. `view="masked"` shows the
 // `[TYPE_N]` placeholders; `view="original"` shows the recovered real values.
-function HighlightedText({ aligned, view }: { aligned: Aligned; view: "masked" | "original" }) {
+export function HighlightedText({ aligned, view }: { aligned: Aligned; view: "masked" | "original" }) {
   return (
     <>
       {aligned.parts.map((part: PiiPart, i: number) =>
