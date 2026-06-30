@@ -24,7 +24,7 @@ from __future__ import annotations
 import gzip
 import json
 import zlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -301,7 +301,7 @@ def create_app(
         request: Request,
         wire: str,
         model: str,
-        vault: Vault,
+        entity_counts: Mapping[str, int],
         in_tokens: int | None = None,
         out_tokens: int | None = None,
         texts: list[tuple[str, str]] | None = None,
@@ -323,7 +323,7 @@ def create_app(
                 kind=kind,
                 model=model,
                 policy=settings.policy,
-                entity_counts=vault.type_counts,
+                entity_counts=entity_counts,
                 language=language,
                 input_tokens=in_tokens,
                 output_tokens=out_tokens,
@@ -354,6 +354,7 @@ def create_app(
         # one threadpool worker per request and the await below orders all later
         # reads — revisit if segment anonymization is ever parallelized.
         captured: list[tuple[str, str]] = []
+        count_vault = Vault()
 
         # In "monitor" mode we still run detection (to populate the vault and log
         # what was present) but forward the original text — real values reach the
@@ -363,6 +364,7 @@ def create_app(
         def anon(text: str, author: Author, novel: bool) -> str:
             cleaned = anonymize_into(text, detector, vault)
             if novel and author in (Author.USER, Author.TOOL):
+                anonymize_into(text, detector, count_vault)
                 captured.append((text, cleaned))
             return text if forward_original else cleaned
 
@@ -396,7 +398,13 @@ def create_app(
                     RESPONSE_TRANSFORMS[wire](payload, lambda t: deanonymize(t, vault))
                     in_tokens, out_tokens = extract_tokens(wire, payload)
                 _audit(
-                    request, wire, model, vault, in_tokens, out_tokens, texts=captured, kind=kind
+                    request,
+                    wire,
+                    model,
+                    count_vault.type_counts,
+                    in_tokens,
+                    out_tokens,
+                    texts=captured,
                 )
                 return JSONResponse(payload, status)
 
@@ -413,7 +421,7 @@ def create_app(
                         request,
                         wire,
                         model,
-                        vault,
+                        count_vault.type_counts,
                         usage.input_tokens,
                         usage.output_tokens,
                         texts=captured,
@@ -430,7 +438,7 @@ def create_app(
         if isinstance(result.json, dict) and 200 <= result.status_code < 300:
             RESPONSE_TRANSFORMS[wire](result.json, lambda t: deanonymize(t, vault))
             tokens = extract_tokens(wire, result.json)
-        _audit(request, wire, model, vault, *tokens, texts=captured, kind=kind)
+        _audit(request, wire, model, count_vault.type_counts, *tokens, texts=captured)
         return JSONResponse(result.json if result.json is not None else {}, result.status_code)
 
     @app.get("/healthz")
