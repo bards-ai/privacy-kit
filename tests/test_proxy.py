@@ -740,6 +740,35 @@ def test_openai_responses_historical_user_messages_not_re_saved(tmp_path: Path) 
     assert any("John Smith" in o for o in originals), "new turn 2 not saved"
 
 
+def test_entity_count_scoped_to_new_turn_not_resent_history(tmp_path: Path) -> None:
+    """entity_total counts only this turn's PII, not the whole re-sent conversation.
+
+    The vault is shared across the request for placeholder consistency, but the
+    audited count must describe the new turn alone — otherwise every turn
+    re-tallies the growing history and the dashboard shows an inflated number.
+    A value that also appears in the (re-sent, machine-authored) system prompt
+    still counts, because the user genuinely introduced it this turn.
+    """
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}))
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "system": "You help John Smith.",
+            "messages": [
+                {"role": "user", "content": "turn 1: john@x.com"},  # history
+                {"role": "assistant", "content": "got it"},
+                {"role": "user", "content": "turn 2: John Smith"},  # new turn
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    rec = store.recent()[0]
+    # Only the new turn's PERSON_NAME — not the historical EMAIL_ADDRESS.
+    assert rec.entity_counts == {"PERSON_NAME": 1}
+    assert rec.entity_total == 1
+
+
 # --- author-scoped save: system/instructions/assistant excluded --------------
 
 
