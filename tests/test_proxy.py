@@ -769,6 +769,47 @@ def test_entity_count_scoped_to_new_turn_not_resent_history(tmp_path: Path) -> N
     assert rec.entity_total == 1
 
 
+def test_saved_placeholder_numbering_scoped_to_new_turn_not_resent_history(
+    tmp_path: Path,
+) -> None:
+    """Saved [TYPE_N] numbering counts only this turn's novel PII, not the history.
+
+    The forward vault's counter runs through the whole re-sent conversation, so a
+    new name on a later turn would otherwise be saved as a high [PERSON_NAME_N]
+    that mismatches the per-turn entity_counts. The saved segment must read 1..N
+    over just what was new this turn.
+    """
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
+    store = AuditStore(tmp_path / "audit.sqlite")
+    forwarder = CapturingForwarder(lambda p: ForwardResult(200, {"content": []}, {}))
+    app = create_app(
+        detector=LiteralDetector({"John Smith": "PERSON_NAME", "Jane Doe": "PERSON_NAME"}),
+        store=store,
+        forwarder=forwarder,
+        settings=settings,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "turn 1: John Smith"},  # history → forward _1
+                {"role": "assistant", "content": "got it"},
+                {"role": "user", "content": "turn 2: Jane Doe"},  # new turn
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    rows = store.texts(iid)
+    saved = next(r for r in rows if "Jane Doe" in (r.original or ""))
+    # Numbered for this turn alone, not [PERSON_NAME_2] from the re-sent history.
+    assert "[PERSON_NAME_1]" in saved.anonymized
+    assert "[PERSON_NAME_2]" not in saved.anonymized
+
+
 # --- author-scoped save: system/instructions/assistant excluded --------------
 
 

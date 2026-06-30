@@ -14,6 +14,7 @@ function hslToHex(h: number, s: number, l: number): string {
 // everywhere (chips, charts, highlights).
 export function entityColor(label: string): string {
   let h = 0;
+  
   for (const c of label) h = (h * 31 + c.charCodeAt(0)) % 360;
   return hslToHex(h, 0.68, 0.55);
 }

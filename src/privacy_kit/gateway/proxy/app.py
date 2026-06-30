@@ -354,6 +354,11 @@ def create_app(
         # one threadpool worker per request and the await below orders all later
         # reads — revisit if segment anonymization is ever parallelized.
         captured: list[tuple[str, str]] = []
+        # Numbers the saved segments' placeholders ([TYPE_N]) using only this
+        # turn's novel content, so they read 1..N per interaction. The forward
+        # vault's counter runs through the whole re-sent history, which would
+        # inflate the numbers (turn 9's lone new name showing as [PERSON_NAME_30])
+        # and mismatch the per-turn entity_counts derived from this same vault.
         count_vault = Vault()
 
         # In "monitor" mode we still run detection (to populate the vault and log
@@ -364,8 +369,10 @@ def create_app(
         def anon(text: str, author: Author, novel: bool) -> str:
             cleaned = anonymize_into(text, detector, vault)
             if novel and author in (Author.USER, Author.TOOL):
-                anonymize_into(text, detector, count_vault)
-                captured.append((text, cleaned))
+                # Save count_vault's rendering (per-interaction numbering), not
+                # the forward vault's history-inflated one.
+                saved = anonymize_into(text, detector, count_vault)
+                captured.append((text, saved))
             return text if forward_original else cleaned
 
         # Model inference is CPU-bound; run it off the event loop so concurrent
