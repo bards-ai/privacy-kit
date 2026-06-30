@@ -16,7 +16,7 @@ setup: ## Build the Docker images (gateway + dashboard)
 
 run: ## Start the stack — dashboard on http://127.0.0.1:3000, gateway on :8787
 	@echo "Dashboard → http://127.0.0.1:3000   Gateway → http://127.0.0.1:8787"
-	docker compose up
+	docker compose up -d
 
 down: ## Stop the stack
 	docker compose down
