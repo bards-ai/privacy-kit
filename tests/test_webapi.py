@@ -328,6 +328,27 @@ def test_texts_browser_lists_segments(tmp_path: Path) -> None:
     assert seg["source"] == "claude-code"
     assert seg["original"] == "I'm John Smith, john@x.com"
     assert "[PERSON_NAME_1]" in seg["anonymized"]
+    assert seg["category"] == "user"
+
+
+def test_texts_browser_filters_by_category(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="m",
+        entity_counts={"PERSON_NAME": 2},
+        texts=[
+            ("typed: Jane Doe", "typed: [PERSON_NAME_1]", "user"),
+            ("file owner: John Smith", "file owner: [PERSON_NAME_2]", "tool"),
+        ],
+    )
+    all_segs = client.get("/api/v1/texts").json()["texts"]
+    assert {s["category"] for s in all_segs} == {"user", "tool"}
+
+    tool_only = client.get("/api/v1/texts", params={"category": "tool"}).json()["texts"]
+    assert [s["category"] for s in tool_only] == ["tool"]
+    assert "John Smith" in tool_only[0]["original"]
 
 
 def test_texts_browser_redacts_when_disabled(tmp_path: Path) -> None:

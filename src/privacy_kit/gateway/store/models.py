@@ -64,6 +64,7 @@ class InteractionText(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     interaction_id: int = Field(foreign_key="interaction.id", index=True)
     seq: int = 0  # capture order within the request
+    category: str = Field(default="user", index=True)
     original: str
     anonymized: str
 

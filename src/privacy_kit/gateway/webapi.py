@@ -99,6 +99,7 @@ def _text_dict(row: InteractionText, *, expose_plaintext: bool) -> dict[str, Any
     return {
         "id": row.id,
         "seq": row.seq,
+        "category": row.category,
         "original": row.original if expose_plaintext else None,
         "anonymized": row.anonymized,
     }
@@ -234,16 +235,22 @@ def register_webapi_routes(
 
     @app.get("/api/v1/texts")
     async def api_texts(
-        limit: int = 200, filters: dict[str, Any] = Depends(_list_filters)
+        limit: int = 200,
+        category: str | None = None,
+        filters: dict[str, Any] = Depends(_list_filters),
     ) -> JSONResponse:
         # Flatten saved before/after segments across interactions for the texts
         # browser. ``original`` is gated by expose_plaintext, like the detail view.
+        # ``category`` filters segments by origin ("user" | "tool"); it lives on the
+        # segment, not the interaction, so it's applied here rather than in the store.
         interactions = store.iter_interactions(limit=min(limit, 500), **filters)
         out = []
         for it in interactions:
             if it.id is None:
                 continue
             for t in store.texts(it.id):
+                if category and t.category != category:
+                    continue
                 out.append(
                     {
                         "interaction_id": it.id,
@@ -251,6 +258,7 @@ def register_webapi_routes(
                         "source": it.source,
                         "model": it.model,
                         "seq": t.seq,
+                        "category": t.category,
                         "original": t.original if cfg.expose_plaintext else None,
                         "anonymized": t.anonymized,
                     }

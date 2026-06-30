@@ -304,7 +304,7 @@ def create_app(
         entity_counts: Mapping[str, int],
         in_tokens: int | None = None,
         out_tokens: int | None = None,
-        texts: list[tuple[str, str]] | None = None,
+        texts: list[tuple[str, str, str]] | None = None,
         kind: str = "main",
     ) -> None:
         source = _source_label(request, _DEFAULT_SOURCE[wire])
@@ -312,11 +312,11 @@ def create_app(
             pairs = texts or []
             # Detect language from the original user text (unfiltered, so it
             # still works when only anonymized segments are saved).
-            language = detect_language(" ".join(o for o, _ in pairs if o))
+            language = detect_language(" ".join(o for o, _, _ in pairs if o))
             if settings.save_texts == "anonymized":
-                pairs = [(o, a) for o, a in pairs if o != a]
+                pairs = [t for t in pairs if t[0] != t[1]]
             else:  # "all"
-                pairs = [(o, a) for o, a in pairs if o]
+                pairs = [t for t in pairs if t[0]]
             store.record(
                 source=source,
                 wire_format=wire,
@@ -353,7 +353,7 @@ def create_app(
         # novel on this turn. Safe without a lock: the whole transform runs in
         # one threadpool worker per request and the await below orders all later
         # reads — revisit if segment anonymization is ever parallelized.
-        captured: list[tuple[str, str]] = []
+        captured: list[tuple[str, str, str]] = []
         # Numbers the saved segments' placeholders ([TYPE_N]) using only this
         # turn's novel content, so they read 1..N per interaction. The forward
         # vault's counter runs through the whole re-sent history, which would
@@ -370,9 +370,11 @@ def create_app(
             cleaned = anonymize_into(text, detector, vault)
             if novel and author in (Author.USER, Author.TOOL):
                 # Save count_vault's rendering (per-interaction numbering), not
-                # the forward vault's history-inflated one.
+                # the forward vault's history-inflated one. Tag with the segment's
+                # origin so the dashboard can colour/filter user vs tool text.
                 saved = anonymize_into(text, detector, count_vault)
-                captured.append((text, saved))
+                category = "user" if author is Author.USER else "tool"
+                captured.append((text, saved, category))
             return text if forward_original else cleaned
 
         # Model inference is CPU-bound; run it off the event loop so concurrent
@@ -522,9 +524,11 @@ def create_app(
         vault = Vault()
         cleaned = await run_in_threadpool(anonymize_into, text, detector, vault)
         with suppress(Exception):  # auditing must never break the hook path
-            pairs = [(text, cleaned)]
+            # A prompt event is user-typed; a file-read event is tool/file data.
+            category = "tool" if event == "beforeReadFile" else "user"
+            pairs = [(text, cleaned, category)]
             if settings.save_texts == "anonymized":
-                pairs = [(o, a) for o, a in pairs if o != a]
+                pairs = [t for t in pairs if t[0] != t[1]]
             store.record(
                 source="cursor",
                 wire_format=f"cursor:{event}",

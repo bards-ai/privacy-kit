@@ -34,9 +34,13 @@ export interface Detection {
   count: number;
 }
 
+// Origin of a saved segment: text the human typed, or data a local tool/file produced.
+export type TextCategory = "user" | "tool";
+
 export interface TextSegment {
   id: number;
   seq: number;
+  category: TextCategory;
   original: string | null;
   anonymized: string;
 }
@@ -76,6 +80,7 @@ export interface TextRow {
   source: string;
   model: string;
   seq: number;
+  category: TextCategory;
   original: string | null;
   anonymized: string;
 }

@@ -934,6 +934,41 @@ def test_anthropic_tool_result_data_is_saved(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert "John Smith" in rows[0].original
     assert "John Smith" not in rows[0].anonymized
+    # Origin tag: file/command data is "tool", not "user".
+    assert rows[0].category == "tool"
+
+
+def test_anthropic_segments_tagged_by_origin(tmp_path: Path) -> None:
+    """Saved segments record whether they are user-typed text or tool/file data."""
+    settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")
+    client, _forwarder, store = build(
+        tmp_path, lambda p: ForwardResult(200, {"content": []}, {}), settings
+    )
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Reply to Jane Doe."},
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [{"type": "text", "text": "Owner: John Smith"}],
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    by_origin = {r.category: r.original for r in store.texts(iid)}
+    assert "Jane Doe" in by_origin["user"]
+    assert "John Smith" in by_origin["tool"]
 
 
 def test_anthropic_injected_system_reminder_not_saved(tmp_path: Path) -> None:
@@ -982,9 +1017,22 @@ def test_is_injected_system_text_patterns() -> None:
     assert inj("User: <local-command-stdout>Set model to claude-opus-4-8</local-command-stdout>\n")
     assert inj("<ide_selection>some code</ide_selection>")
     assert inj("[SUGGESTION MODE: Suggest what the user might type next]")
-    # Genuine user messages and tool/file output must NOT be flagged.
+    # Multiple harness wrappers concatenated into one block (Claude Code slash
+    # commands) and a leading wrapper followed by trailing text — these open with
+    # a known harness tag even though no single tag spans the whole string.
+    assert inj(
+        "<command-name>/clear</command-name>\n"
+        "<command-message>clear</command-message>\n"
+        "<command-args></command-args>\n"
+        "<local-command-stdout></local-command-stdout>"
+    )
+    assert inj("<ide_selection>x = 1</ide_selection>\n<system-reminder>note</system-reminder>")
+    assert inj("<system-reminder>Plan mode is active</system-reminder>\nactually do the thing")
+    # Genuine user messages and tool/file output must NOT be flagged — including a
+    # message that merely starts with markup that is not a harness wrapper tag.
     assert not inj("Draft a reply to john@x.com confirming their account.")
     assert not inj("=== app.py 300-320 ===\n    return JSONResponse(...)")
+    assert not inj("<div>hello</div> and then some more text I actually typed")
     assert not inj("")
 
 

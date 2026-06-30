@@ -136,6 +136,35 @@ _TRANSCRIPT_PREFIXES: tuple[str, ...] = ("User:", "Assistant:", "Human:", "Syste
 #   "[SUGGESTION MODE: …]". Add new directive prefixes here.
 _BRACKET_DIRECTIVES: tuple[str, ...] = ("[SUGGESTION MODE:",)
 
+# Rule 4 — a block that *opens* with a known harness wrapper tag. Rule 1 only
+# fires when the whole string is one wrapped block; it misses the shapes the
+# harness actually emits when several wrappers are concatenated into one text
+# block, or a wrapper is followed by trailing text:
+#   * Claude Code slash commands —
+#       <command-name>/foo</command-name><command-message>…</command-message>
+#       <command-args>…</command-args><local-command-stdout>…</local-command-stdout>
+#   * sibling context blocks — <ide_selection>…</ide_selection><system-reminder>…
+# Unlike Rule 1 this only flags an allow-list of known harness tags, so genuine
+# user-pasted markup ("<div>x</div> and more") isn't swept up. Codex wrappers
+# (<environment_context>, <user_instructions>) arrive as their own whole blocks
+# and are already covered by Rule 1, but are listed here for completeness.
+_HARNESS_TAGS: frozenset[str] = frozenset(
+    {
+        "system-reminder",
+        "command-name",
+        "command-message",
+        "command-args",
+        "local-command-stdout",
+        "local-command-stderr",
+        "ide_selection",
+        "session",
+        "transcript",
+        "user_instructions",
+        "environment_context",
+    }
+)
+_LEADING_TAG_RE = re.compile(r"^<([A-Za-z][\w-]*)\b[^>]*>")
+
 
 def _is_injected_system_text(text: str) -> bool:
     """True if ``text`` is harness-injected system/helper content, not user-typed."""
@@ -146,7 +175,10 @@ def _is_injected_system_text(text: str) -> bool:
         return True
     if stripped.startswith(_BRACKET_DIRECTIVES):
         return True
-    return bool(_WRAPPED_BLOCK_RE.match(stripped))
+    if _WRAPPED_BLOCK_RE.match(stripped):
+        return True
+    lead = _LEADING_TAG_RE.match(stripped)
+    return bool(lead and lead.group(1).lower() in _HARNESS_TAGS)
 
 
 def _anon_preserving_identifier(text: str, fn: TextFn) -> str:

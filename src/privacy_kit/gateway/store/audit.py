@@ -76,6 +76,18 @@ class AuditStore:
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_interaction_kind ON interaction (kind)"
             )
+            text_cols = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(interactiontext)")
+            }
+            if "category" not in text_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE interactiontext ADD COLUMN category VARCHAR NOT NULL "
+                    "DEFAULT 'user'"
+                )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_interactiontext_category "
+                "ON interactiontext (category)"
+            )
 
     def record(
         self,
@@ -89,10 +101,15 @@ class AuditStore:
         language: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
-        texts: Sequence[tuple[str, str]] = (),
+        texts: Sequence[tuple[str, str] | tuple[str, str, str]] = (),
     ) -> int:
         """Persist one interaction, its per-type detections, and any saved text
-        segments (``(original, anonymized)`` pairs, in capture order); return its id.
+        segments, in capture order; return its id.
+
+        Each ``texts`` entry is ``(original, anonymized)`` or, to record the
+        segment's origin, ``(original, anonymized, category)`` where category is
+        ``"user"`` (human-typed) or ``"tool"`` (tool/file data). Two-tuples default
+        the category to ``"user"``.
         """
         counts = {etype: int(n) for etype, n in entity_counts.items() if n}
         interaction = Interaction(
@@ -115,11 +132,14 @@ class AuditStore:
                 session.add(
                     Detection(interaction_id=interaction.id, entity_type=etype, count=count)
                 )
-            for seq, (original, anonymized) in enumerate(texts):
+            for seq, entry in enumerate(texts):
+                original, anonymized = entry[0], entry[1]
+                category = entry[2] if len(entry) > 2 else "user"
                 session.add(
                     InteractionText(
                         interaction_id=interaction.id,
                         seq=seq,
+                        category=category,
                         original=original,
                         anonymized=anonymized,
                     )
