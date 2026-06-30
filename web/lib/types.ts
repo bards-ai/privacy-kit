@@ -5,6 +5,7 @@ export interface Interaction {
   created_at: string;
   source: string;
   wire_format: string;
+  kind: string; // call purpose: "main" | "safety" | "helper"
   model: string;
   policy: string;
   language: string | null;
@@ -62,6 +63,7 @@ export interface Summary {
 export interface FilterValues {
   sources: string[];
   wire_formats: string[];
+  kinds: string[];
   models: string[];
   policies: string[];
   languages: string[];

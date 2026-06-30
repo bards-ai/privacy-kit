@@ -39,6 +39,7 @@ from privacy_kit.core.vault import Vault, anonymize_into, deanonymize
 from privacy_kit.gateway.config import Settings, get_settings
 from privacy_kit.gateway.language import detect_language
 from privacy_kit.gateway.otel import register_otel_routes
+from privacy_kit.gateway.proxy.classify import classify_kind
 from privacy_kit.gateway.proxy.streaming import PlaceholderStreamDecoder, StreamUsage, rewrite_sse
 from privacy_kit.gateway.proxy.transform import (
     REQUEST_TRANSFORMS,
@@ -304,6 +305,7 @@ def create_app(
         in_tokens: int | None = None,
         out_tokens: int | None = None,
         texts: list[tuple[str, str]] | None = None,
+        kind: str = "main",
     ) -> None:
         source = _source_label(request, _DEFAULT_SOURCE[wire])
         with suppress(Exception):  # auditing must never break the proxy path
@@ -318,6 +320,7 @@ def create_app(
             store.record(
                 source=source,
                 wire_format=wire,
+                kind=kind,
                 model=model,
                 policy=settings.policy,
                 entity_counts=vault.type_counts,
@@ -341,6 +344,10 @@ def create_app(
             return JSONResponse({"error": "expected a JSON object body"}, status_code=400)
 
         model = str(body.get("model", "unknown"))
+        # Classify the call's purpose on the original body, before anonymization
+        # mutates it — keeps background chatter (safety/helper) separable from
+        # the real conversation in the dashboard.
+        kind = classify_kind(wire, body)
         vault = Vault()
         # Savable (original, anonymized) pairs: USER and TOOL segments that are
         # novel on this turn. Safe without a lock: the whole transform runs in
@@ -388,7 +395,9 @@ def create_app(
                 if isinstance(payload, dict) and 200 <= status < 300:
                     RESPONSE_TRANSFORMS[wire](payload, lambda t: deanonymize(t, vault))
                     in_tokens, out_tokens = extract_tokens(wire, payload)
-                _audit(request, wire, model, vault, in_tokens, out_tokens, texts=captured)
+                _audit(
+                    request, wire, model, vault, in_tokens, out_tokens, texts=captured, kind=kind
+                )
                 return JSONResponse(payload, status)
 
             usage = StreamUsage()
@@ -408,6 +417,7 @@ def create_app(
                         usage.input_tokens,
                         usage.output_tokens,
                         texts=captured,
+                        kind=kind,
                     )
                     await stack.aclose()
 
@@ -420,7 +430,7 @@ def create_app(
         if isinstance(result.json, dict) and 200 <= result.status_code < 300:
             RESPONSE_TRANSFORMS[wire](result.json, lambda t: deanonymize(t, vault))
             tokens = extract_tokens(wire, result.json)
-        _audit(request, wire, model, vault, *tokens, texts=captured)
+        _audit(request, wire, model, vault, *tokens, texts=captured, kind=kind)
         return JSONResponse(result.json if result.json is not None else {}, result.status_code)
 
     @app.get("/healthz")

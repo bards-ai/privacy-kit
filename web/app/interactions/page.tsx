@@ -10,6 +10,7 @@ const EMPTY_LIST: InteractionList = { items: [], page: 1, page_size: 50, total: 
 const EMPTY_FILTERS: FilterValues = {
   sources: [],
   wire_formats: [],
+  kinds: [],
   models: [],
   policies: [],
   languages: [],

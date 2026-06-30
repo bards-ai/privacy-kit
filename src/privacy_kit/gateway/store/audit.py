@@ -25,6 +25,7 @@ _SORT_COLUMNS = {
     "created_at": Interaction.created_at,
     "source": Interaction.source,
     "wire_format": Interaction.wire_format,
+    "kind": Interaction.kind,
     "model": Interaction.model,
     "policy": Interaction.policy,
     "language": Interaction.language,
@@ -56,6 +57,25 @@ class AuditStore:
             cursor.close()
 
         SQLModel.metadata.create_all(self.engine)
+        self._ensure_columns()
+
+    def _ensure_columns(self) -> None:
+        """Additively migrate older databases that predate newer columns.
+
+        ``create_all`` only creates missing *tables*, never new columns on an
+        existing one. Columns added to the model after a database was first
+        created are patched in here with a default, so upgrading in place never
+        requires a manual migration or a wipe. Each step is idempotent.
+        """
+        with self.engine.begin() as conn:
+            cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(interaction)")}
+            if "kind" not in cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE interaction ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'main'"
+                )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_interaction_kind ON interaction (kind)"
+            )
 
     def record(
         self,
@@ -64,6 +84,7 @@ class AuditStore:
         wire_format: str,
         model: str,
         entity_counts: Mapping[str, int],
+        kind: str = "main",
         policy: str = "pseudonymize",
         language: str | None = None,
         input_tokens: int | None = None,
@@ -77,6 +98,7 @@ class AuditStore:
         interaction = Interaction(
             source=source,
             wire_format=wire_format,
+            kind=kind,
             model=model,
             policy=policy,
             language=language,
@@ -148,6 +170,7 @@ class AuditStore:
         *,
         sources: Sequence[str] | None = None,
         wire_formats: Sequence[str] | None = None,
+        kinds: Sequence[str] | None = None,
         models: Sequence[str] | None = None,
         policies: Sequence[str] | None = None,
         languages: Sequence[str] | None = None,
@@ -163,6 +186,8 @@ class AuditStore:
             conds.append(col(Interaction.source).in_(sources))
         if wire_formats:
             conds.append(col(Interaction.wire_format).in_(wire_formats))
+        if kinds:
+            conds.append(col(Interaction.kind).in_(kinds))
         if models:
             conds.append(col(Interaction.model).in_(models))
         if policies:
@@ -206,6 +231,7 @@ class AuditStore:
         order: str = "desc",
         sources: Sequence[str] | None = None,
         wire_formats: Sequence[str] | None = None,
+        kinds: Sequence[str] | None = None,
         models: Sequence[str] | None = None,
         policies: Sequence[str] | None = None,
         languages: Sequence[str] | None = None,
@@ -223,6 +249,7 @@ class AuditStore:
         conds = self._conditions(
             sources=sources,
             wire_formats=wire_formats,
+            kinds=kinds,
             models=models,
             policies=policies,
             languages=languages,
@@ -250,6 +277,7 @@ class AuditStore:
         limit: int | None = None,
         sources: Sequence[str] | None = None,
         wire_formats: Sequence[str] | None = None,
+        kinds: Sequence[str] | None = None,
         models: Sequence[str] | None = None,
         policies: Sequence[str] | None = None,
         languages: Sequence[str] | None = None,
@@ -263,6 +291,7 @@ class AuditStore:
         conds = self._conditions(
             sources=sources,
             wire_formats=wire_formats,
+            kinds=kinds,
             models=models,
             policies=policies,
             languages=languages,
@@ -313,6 +342,7 @@ class AuditStore:
         with Session(self.engine) as session:
             sources = session.exec(select(col(Interaction.source)).distinct()).all()
             wire_formats = session.exec(select(col(Interaction.wire_format)).distinct()).all()
+            kinds = session.exec(select(col(Interaction.kind)).distinct()).all()
             models = session.exec(select(col(Interaction.model)).distinct()).all()
             policies = session.exec(select(col(Interaction.policy)).distinct()).all()
             languages = session.exec(select(col(Interaction.language)).distinct()).all()
@@ -320,6 +350,7 @@ class AuditStore:
         return {
             "sources": sorted(v for v in sources if v),
             "wire_formats": sorted(v for v in wire_formats if v),
+            "kinds": sorted(v for v in kinds if v),
             "models": sorted(v for v in models if v),
             "policies": sorted(v for v in policies if v),
             "languages": sorted(v for v in languages if v),

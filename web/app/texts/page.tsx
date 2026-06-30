@@ -10,6 +10,7 @@ const EMPTY_TEXTS: TextsResponse = { texts: [], redacted: false };
 const EMPTY_FILTERS: FilterValues = {
   sources: [],
   wire_formats: [],
+  kinds: [],
   models: [],
   policies: [],
   languages: [],

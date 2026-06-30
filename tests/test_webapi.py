@@ -222,7 +222,7 @@ def test_export_csv_has_header_and_attachment(tmp_path: Path) -> None:
     assert resp.headers["content-type"].startswith("text/csv")
     assert "filename=privacy-kit-interactions.csv" in resp.headers["content-disposition"]
     lines = resp.text.splitlines()
-    assert lines[0].startswith("id,created_at,source,wire_format,model,policy")
+    assert lines[0].startswith("id,created_at,source,wire_format,kind,model,policy")
     assert "claude-code" in resp.text and "codex" in resp.text
 
 

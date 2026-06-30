@@ -26,6 +26,7 @@ class Interaction(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
     source: str = Field(index=True)  # e.g. "claude-code", "codex", "cursor", "otel"
     wire_format: str  # "anthropic" | "openai_chat" | "openai_responses" | "otel"
+    kind: str = Field(default="main", index=True)  # purpose: "main" | "safety" | "helper"
     model: str  # upstream model name the request targeted
     policy: str = "pseudonymize"
     language: str | None = None

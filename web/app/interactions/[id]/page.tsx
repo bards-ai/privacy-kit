@@ -4,11 +4,12 @@ import type { ReactNode } from "react";
 
 import { DeleteInteraction } from "@/components/delete-interaction";
 import { EntityChips } from "@/components/entity-chips";
+import { InteractionDetailBody } from "@/components/interaction-detail-body";
 import { PolicyBadge } from "@/components/policy-badge";
 import { Card, CardContent, CardHeader, CardTitle, EmptyState, PageHeader } from "@/components/ui";
 import { apiGetOr } from "@/lib/api";
-import { entityColor } from "@/lib/colors";
 import { formatDateTime } from "@/lib/format";
+import { kindMeta } from "@/lib/kind";
 import type { InteractionDetail } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +45,7 @@ export default async function InteractionDetailPage({ params }: { params: { id: 
     ["ID", `#${it.id}`],
     ["When", formatDateTime(it.created_at)],
     ["Source", it.source],
+    ["Kind", kindMeta(it.kind).label],
     ["Policy", <PolicyBadge key="p" policy={it.policy} />],
     ["Wire format", it.wire_format],
     ["Model", it.model],
@@ -87,82 +89,11 @@ export default async function InteractionDetailPage({ params }: { params: { id: 
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Detections</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data.detections.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No PII detected.</p>
-            ) : (
-              <table className="w-full max-w-md text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-muted-foreground">
-                    <th className="py-2">Entity type</th>
-                    <th className="py-2">Count</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.detections.map((d) => (
-                    <tr key={d.id} className="border-b last:border-0">
-                      <td className="py-2">
-                        <span className="inline-flex items-center gap-2">
-                          <span
-                            className="h-2 w-2 rounded-full"
-                            style={{ backgroundColor: entityColor(d.entity_type) }}
-                          />
-                          {d.entity_type}
-                        </span>
-                      </td>
-                      <td className="py-2 tabular-nums">{d.count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Saved text — before &amp; after</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data.texts_redacted ? (
-              <p className="mb-3 text-xs text-amber-500">
-                Originals are redacted (PII_EXPOSE_PLAINTEXT=false).
-              </p>
-            ) : null}
-            {data.texts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No text segments saved for this interaction.
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {data.texts.map((t) => (
-                  <div key={t.id} className="grid gap-3 lg:grid-cols-2">
-                    <div>
-                      <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
-                        Original
-                      </div>
-                      <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 text-sm">
-                        {t.original ?? <span className="text-muted-foreground">[redacted]</span>}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
-                        Anonymized
-                      </div>
-                      <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 font-mono text-sm">
-                        {t.anonymized}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <InteractionDetailBody
+          detections={data.detections}
+          texts={data.texts}
+          redacted={data.texts_redacted}
+        />
       </div>
     </>
   );
