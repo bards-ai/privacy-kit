@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
 
 import { CATEGORY_META, CategoryBadge } from "@/components/category-badge";
-import { HighlightedText } from "@/components/interaction-detail-body";
+import { HighlightedText } from "@/components/text-highlight";
 import { Card, CardContent, ConnectionError, EmptyState } from "@/components/ui";
 import { clientGet } from "@/lib/client-api";
 import { cn } from "@/lib/cn";

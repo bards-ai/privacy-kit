@@ -4,7 +4,7 @@ import {
   Eye,
   FileText,
   LayoutDashboard,
-  List,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
@@ -19,7 +19,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/interactions", label: "Interactions", icon: List },
+  { href: "/conversations", label: "Conversations", icon: MessagesSquare },
   { href: "/texts", label: "Text segments", icon: FileText },
   { href: "/preview", label: "Live preview", icon: Eye },
   { href: "/settings", label: "Settings", icon: Settings },

@@ -182,6 +182,95 @@ def test_plaintext_is_redacted_when_disabled(tmp_path: Path) -> None:
     assert "[PERSON_NAME_1]" in data["texts"][0]["anonymized"]
 
 
+def seed_conversation(store: AuditStore) -> None:
+    """Two grouped turns under conv-x plus one ungrouped interaction."""
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="claude-opus-4-8",
+        entity_counts={"PERSON_NAME": 1},
+        input_tokens=10,
+        output_tokens=20,
+        conversation_id="conv-x",
+        texts=[
+            ("I'm John Smith", "I'm [PERSON_NAME_1]", "user"),
+            ("Hi John Smith!", "Hi [PERSON_NAME_1]!", "assistant"),
+        ],
+    )
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="gpt-5-mini",
+        entity_counts={"EMAIL_ADDRESS": 1},
+        input_tokens=5,
+        output_tokens=7,
+        conversation_id="conv-x",
+    )
+    store.record(
+        source="cursor",
+        wire_format="openai_chat",
+        model="gpt-5",
+        entity_counts={"PHONE_NUMBER": 1},
+    )
+
+
+def test_conversations_list_groups_turns(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    seed_conversation(store)
+    data = client.get("/api/v1/conversations").json()
+    # Only the grouped conversation appears; the ungrouped row is excluded.
+    assert data["total"] == 1
+    item = data["items"][0]
+    assert item["conversation_id"] == "conv-x"
+    assert item["turn_count"] == 2
+    assert item["entity_total"] == 2
+    assert item["entity_counts"] == {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1}
+
+
+def test_conversation_detail_returns_ordered_turns(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    seed_conversation(store)
+    data = client.get("/api/v1/conversations/conv-x").json()
+    assert data["conversation_id"] == "conv-x"
+    assert len(data["turns"]) == 2
+    assert data["texts_redacted"] is False
+    # First turn carries the saved prompt + agent response and its detection.
+    first = data["turns"][0]
+    cats = {t["category"]: t for t in first["texts"]}
+    assert cats["user"]["original"] == "I'm John Smith"
+    assert cats["assistant"]["original"] == "Hi John Smith!"
+    assert {d["entity_type"] for d in first["detections"]} == {"PERSON_NAME"}
+
+
+def test_conversation_detail_includes_summary(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    seed_conversation(store)
+    summary = client.get("/api/v1/conversations/conv-x").json()["summary"]
+    assert summary["turn_count"] == 2
+    assert summary["entity_total"] == 2
+    assert summary["entity_counts"] == {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1}
+    assert summary["sources"] == ["claude-code"]
+    assert summary["models"] == ["claude-opus-4-8", "gpt-5-mini"]
+    assert summary["input_tokens"] == 15  # 10 + 5
+    assert summary["output_tokens"] == 27  # 20 + 7
+
+
+def test_conversation_detail_redacts_plaintext_when_disabled(tmp_path: Path) -> None:
+    client, store = build(tmp_path, settings=Settings(_env_file=None, expose_plaintext=False))
+    seed_conversation(store)
+    data = client.get("/api/v1/conversations/conv-x").json()
+    assert data["texts_redacted"] is True
+    # Both the prompt and the agent response have their originals redacted.
+    for seg in data["turns"][0]["texts"]:
+        assert seg["original"] is None
+        assert "[PERSON_NAME_1]" in seg["anonymized"]
+
+
+def test_conversation_detail_404(tmp_path: Path) -> None:
+    client, _ = build(tmp_path)
+    assert client.get("/api/v1/conversations/nope").status_code == 404
+
+
 def test_delete_interaction(tmp_path: Path) -> None:
     client, store = build(tmp_path)
     seed(store)

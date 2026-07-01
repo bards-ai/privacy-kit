@@ -147,7 +147,7 @@ export function OverviewLive({
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Recent interactions</CardTitle>
             <Link
-              href="/interactions"
+              href="/conversations"
               className="flex items-center gap-1 text-xs text-primary hover:underline"
             >
               View all <ArrowRight className="h-3 w-3" />

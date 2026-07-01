@@ -24,7 +24,7 @@ from __future__ import annotations
 import gzip
 import json
 import zlib
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -40,11 +40,16 @@ from privacy_kit.gateway.config import Settings, get_settings
 from privacy_kit.gateway.language import detect_language
 from privacy_kit.gateway.otel import register_otel_routes
 from privacy_kit.gateway.proxy.classify import classify_kind
-from privacy_kit.gateway.proxy.streaming import PlaceholderStreamDecoder, StreamUsage, rewrite_sse
+from privacy_kit.gateway.proxy.streaming import (
+    CapturingStreamDecoder,
+    StreamUsage,
+    rewrite_sse,
+)
 from privacy_kit.gateway.proxy.transform import (
     REQUEST_TRANSFORMS,
     RESPONSE_TRANSFORMS,
     Author,
+    conversation_key,
     extract_tokens,
 )
 from privacy_kit.gateway.store import AuditStore
@@ -306,17 +311,31 @@ def create_app(
         out_tokens: int | None = None,
         texts: list[tuple[str, str, str]] | None = None,
         kind: str = "main",
+        conversation_id: str | None = None,
     ) -> None:
         source = _source_label(request, _DEFAULT_SOURCE[wire])
         with suppress(Exception):  # auditing must never break the proxy path
-            pairs = texts or []
+            pairs = list(texts or [])
             # Detect language from the original user text (unfiltered, so it
-            # still works when only anonymized segments are saved).
-            language = detect_language(" ".join(o for o, _, _ in pairs if o))
-            if settings.save_texts == "anonymized":
-                pairs = [t for t in pairs if t[0] != t[1]]
-            else:  # "all"
-                pairs = [t for t in pairs if t[0]]
+            # still works when only anonymized segments are saved). The agent's
+            # response is excluded — language is about what the human wrote.
+            language = detect_language(
+                " ".join(o for o, _, cat in pairs if o and cat != "assistant")
+            )
+
+            def _keep(entry: tuple[str, str, str]) -> bool:
+                original, anonymized, category = entry
+                if not original:
+                    return False
+                # Assistant segments are gated at capture time (only added when
+                # the turn's prompt had PII), so keep them regardless of policy.
+                if category == "assistant":
+                    return True
+                if settings.save_texts == "anonymized":
+                    return original != anonymized
+                return True  # "all"
+
+            pairs = [t for t in pairs if _keep(t)]
             store.record(
                 source=source,
                 wire_format=wire,
@@ -327,6 +346,7 @@ def create_app(
                 language=language,
                 input_tokens=in_tokens,
                 output_tokens=out_tokens,
+                conversation_id=conversation_id,
                 texts=pairs,
             )
 
@@ -344,6 +364,8 @@ def create_app(
             return JSONResponse({"error": "expected a JSON object body"}, status_code=400)
 
         model = str(body.get("model", "unknown"))
+        # Compute conversation_id before body is mutated by anonymization.
+        conv_id = conversation_key(wire, body)
         # Classify the call's purpose on the original body, before anonymization
         # mutates it — keeps background chatter (safety/helper) separable from
         # the real conversation in the dashboard.
@@ -377,6 +399,29 @@ def create_app(
                 captured.append((text, saved, category))
             return text if forward_original else cleaned
 
+        def capture_response(parts: list[tuple[str, str]]) -> None:
+            """Persist the agent's response as an assistant segment — but only
+            when this turn's prompt contained PII, so the conversation view can
+            show what the model said about it. PII-free turns store no response.
+            ``parts`` are (anonymized, original) chunks in emission order."""
+            if not count_vault.type_counts:
+                return
+            anonymized = "".join(a for a, _ in parts)
+            original = "".join(o for _, o in parts)
+            if original.strip():
+                captured.append((original, anonymized, "assistant"))
+
+        def deanon_capturing(parts: list[tuple[str, str]]) -> Callable[[str], str]:
+            """A ``deanonymize`` callback that also records (placeholder, real)
+            chunks so the response can be reconstructed for storage."""
+
+            def fn(text: str) -> str:
+                out = deanonymize(text, vault)
+                parts.append((text, out))
+                return out
+
+            return fn
+
         # Model inference is CPU-bound; run it off the event loop so concurrent
         # requests (Claude Code fires several in parallel) don't stall each other.
         await run_in_threadpool(REQUEST_TRANSFORMS[wire], body, anon)
@@ -404,8 +449,10 @@ def create_app(
                 in_tokens: int | None = None
                 out_tokens: int | None = None
                 if isinstance(payload, dict) and 200 <= status < 300:
-                    RESPONSE_TRANSFORMS[wire](payload, lambda t: deanonymize(t, vault))
+                    resp_parts: list[tuple[str, str]] = []
+                    RESPONSE_TRANSFORMS[wire](payload, deanon_capturing(resp_parts))
                     in_tokens, out_tokens = extract_tokens(wire, payload)
+                    capture_response(resp_parts)
                 _audit(
                     request,
                     wire,
@@ -414,11 +461,13 @@ def create_app(
                     in_tokens,
                     out_tokens,
                     texts=captured,
+                    kind=kind,
+                    conversation_id=conv_id,
                 )
                 return JSONResponse(payload, status)
 
             usage = StreamUsage()
-            decoder = PlaceholderStreamDecoder(vault)
+            decoder = CapturingStreamDecoder(vault)
 
             async def event_stream() -> AsyncIterator[str]:
                 try:
@@ -426,6 +475,8 @@ def create_app(
                         yield chunk
                 finally:
                     # Audit even on a half-finished stream — PII already left.
+                    # Whatever text streamed so far is the agent's response.
+                    capture_response([(decoder.anonymized_text, decoder.original_text)])
                     _audit(
                         request,
                         wire,
@@ -435,6 +486,7 @@ def create_app(
                         usage.output_tokens,
                         texts=captured,
                         kind=kind,
+                        conversation_id=conv_id,
                     )
                     await stack.aclose()
 
@@ -445,9 +497,20 @@ def create_app(
         result = await forward(url, headers, body)
         tokens: tuple[int | None, int | None] = (None, None)
         if isinstance(result.json, dict) and 200 <= result.status_code < 300:
-            RESPONSE_TRANSFORMS[wire](result.json, lambda t: deanonymize(t, vault))
+            resp_parts: list[tuple[str, str]] = []
+            RESPONSE_TRANSFORMS[wire](result.json, deanon_capturing(resp_parts))
             tokens = extract_tokens(wire, result.json)
-        _audit(request, wire, model, count_vault.type_counts, *tokens, texts=captured)
+            capture_response(resp_parts)
+        _audit(
+            request,
+            wire,
+            model,
+            count_vault.type_counts,
+            *tokens,
+            texts=captured,
+            kind=kind,
+            conversation_id=conv_id,
+        )
         return JSONResponse(result.json if result.json is not None else {}, result.status_code)
 
     @app.get("/healthz")
@@ -529,12 +592,14 @@ def create_app(
             pairs = [(text, cleaned, category)]
             if settings.save_texts == "anonymized":
                 pairs = [t for t in pairs if t[0] != t[1]]
+            conv_id = conversation_key("cursor", body)
             store.record(
                 source="cursor",
                 wire_format=f"cursor:{event}",
                 model=str(body.get("model", "unknown")),
                 policy=settings.policy,
                 entity_counts=vault.type_counts,
+                conversation_id=conv_id,
                 texts=pairs,
             )
 

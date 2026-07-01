@@ -34,8 +34,9 @@ export interface Detection {
   count: number;
 }
 
-// Origin of a saved segment: text the human typed, or data a local tool/file produced.
-export type TextCategory = "user" | "tool";
+// Origin of a saved segment: text the human typed, data a local tool/file
+// produced, or the agent's response (stored only when the turn had PII).
+export type TextCategory = "user" | "tool" | "assistant";
 
 export interface TextSegment {
   id: number;
@@ -88,6 +89,42 @@ export interface TextRow {
 export interface TextsResponse {
   texts: TextRow[];
   redacted: boolean;
+}
+
+export interface ConversationListItem {
+  conversation_id: string;
+  first_seen: string;
+  last_seen: string;
+  turn_count: number;
+  entity_total: number;
+  entity_counts: Record<string, number>;
+  sources: string[];
+  models: string[];
+  background_count: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface ConversationList {
+  items: ConversationListItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface ConversationTurn {
+  interaction: Interaction;
+  detections: Detection[];
+  texts: TextSegment[];
+}
+
+export interface ConversationDetail {
+  conversation_id: string;
+  summary: ConversationListItem;
+  turns: ConversationTurn[];
+  background_count: number;
+  texts_redacted: boolean;
 }
 
 export type Policy = "monitor" | "pseudonymize";

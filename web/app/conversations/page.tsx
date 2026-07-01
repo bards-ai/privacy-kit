@@ -1,12 +1,18 @@
-import { InteractionsLive } from "@/components/interactions-live";
-import { ExportMenu, FilterBar } from "@/components/interactions-controls";
+import { ConversationsLive } from "@/components/conversations-live";
+import { FilterBar } from "@/components/interactions-controls";
 import { ConnectionError, PageHeader } from "@/components/ui";
 import { apiGetOr } from "@/lib/api";
-import type { FilterValues, InteractionList } from "@/lib/types";
+import type { ConversationList, FilterValues } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-const EMPTY_LIST: InteractionList = { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 };
+const EMPTY_LIST: ConversationList = {
+  items: [],
+  page: 1,
+  page_size: 50,
+  total: 0,
+  total_pages: 0,
+};
 const EMPTY_FILTERS: FilterValues = {
   sources: [],
   wire_formats: [],
@@ -17,7 +23,7 @@ const EMPTY_FILTERS: FilterValues = {
   entity_types: [],
 };
 
-export default async function InteractionsPage({
+export default async function ConversationsPage({
   searchParams,
 }: {
   searchParams: { [key: string]: string | string[] | undefined };
@@ -27,8 +33,8 @@ export default async function InteractionsPage({
     if (typeof v === "string" && v !== "") qs.set(k, v);
   }
   const query = qs.toString();
-  const { data: list, error } = await apiGetOr<InteractionList>(
-    `/interactions${query ? `?${query}` : ""}`,
+  const { data: list, error } = await apiGetOr<ConversationList>(
+    `/conversations${query ? `?${query}` : ""}`,
     EMPTY_LIST,
   );
   const { data: filters } = await apiGetOr<FilterValues>("/filters", EMPTY_FILTERS);
@@ -36,13 +42,12 @@ export default async function InteractionsPage({
   return (
     <>
       <PageHeader
-        title="Interactions"
-        description="Every request that passed through the gateway."
-        actions={<ExportMenu />}
+        title="Conversations"
+        description="Multi-turn conversations, grouped by their opening message."
       />
       <FilterBar filters={filters} />
 
-      {error ? <ConnectionError message={error} /> : <InteractionsLive initialData={list} />}
+      {error ? <ConnectionError message={error} /> : <ConversationsLive initialData={list} />}
     </>
   );
 }

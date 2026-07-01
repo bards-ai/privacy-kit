@@ -1,9 +1,10 @@
-import { User, Wrench } from "lucide-react";
+import { Bot, User, Wrench } from "lucide-react";
 
 import type { TextCategory } from "@/lib/types";
 
 // Per-segment origin styling, shared by the texts browser and interaction detail.
-// user = text the human typed; tool = data the user's local tools/files produced.
+// user = text the human typed; tool = data the user's local tools/files produced;
+// assistant = the agent's response (stored only when the turn had PII).
 export const CATEGORY_META: Record<
   TextCategory,
   { label: string; badge: string; accent: string; title: string }
@@ -20,10 +21,19 @@ export const CATEGORY_META: Record<
     accent: "border-l-violet-500/60",
     title: "Tool data: output from the user's local tools or files (e.g. file reads, command results).",
   },
+  assistant: {
+    label: "Agent response",
+    badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    accent: "border-l-emerald-500/60",
+    title: "Agent response: the model's reply, stored because this turn's prompt contained PII.",
+  },
 };
+
+const CATEGORY_ICON = { user: User, tool: Wrench, assistant: Bot } as const;
 
 export function CategoryBadge({ category }: { category: TextCategory }) {
   const m = CATEGORY_META[category] ?? CATEGORY_META.user;
+  const Icon = CATEGORY_ICON[category] ?? User;
   return (
     <span
       className={
@@ -32,7 +42,7 @@ export function CategoryBadge({ category }: { category: TextCategory }) {
       }
       title={m.title}
     >
-      {category === "tool" ? <Wrench className="h-3 w-3" /> : <User className="h-3 w-3" />}
+      <Icon className="h-3 w-3" />
       {m.label}
     </span>
   );

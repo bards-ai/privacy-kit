@@ -76,6 +76,14 @@ class AuditStore:
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_interaction_kind ON interaction (kind)"
             )
+            if "conversation_id" not in cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE interaction ADD COLUMN conversation_id VARCHAR"
+                )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_interaction_conversation_id "
+                "ON interaction (conversation_id)"
+            )
             text_cols = {
                 row[1] for row in conn.exec_driver_sql("PRAGMA table_info(interactiontext)")
             }
@@ -101,6 +109,7 @@ class AuditStore:
         language: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        conversation_id: str | None = None,
         texts: Sequence[tuple[str, str] | tuple[str, str, str]] = (),
     ) -> int:
         """Persist one interaction, its per-type detections, and any saved text
@@ -123,6 +132,7 @@ class AuditStore:
             output_tokens=output_tokens,
             entity_total=sum(counts.values()),
             entity_counts=counts,
+            conversation_id=conversation_id,
         )
         with Session(self.engine) as session:
             session.add(interaction)
@@ -334,6 +344,146 @@ class AuditStore:
         """Fetch a single interaction by id, or ``None`` if it doesn't exist."""
         with Session(self.engine) as session:
             return session.get(Interaction, interaction_id)
+
+    # Sort keys the conversation list accepts, mapped to their aggregate
+    # expression (anything else falls back to last_seen).
+    def _conversation_sort(self, sort: str) -> Any:
+        if sort == "first_seen":
+            return func.min(col(Interaction.created_at))
+        if sort == "turn_count":
+            return func.count()
+        if sort == "entity_total":
+            return func.sum(col(Interaction.entity_total))
+        return func.max(col(Interaction.created_at))  # "last_seen" (default)
+
+    def list_conversations(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        sort: str = "last_seen",
+        order: str = "desc",
+        sources: Sequence[str] | None = None,
+        wire_formats: Sequence[str] | None = None,
+        kinds: Sequence[str] | None = None,
+        models: Sequence[str] | None = None,
+        policies: Sequence[str] | None = None,
+        languages: Sequence[str] | None = None,
+        entity_type: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        min_entities: int | None = None,
+        q: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Paginated conversation summaries (grouped turns), plus total count.
+
+        Groups interactions by ``conversation_id`` (NULL ids are ungrouped
+        single-shot interactions and are excluded). Each returned dict carries:
+        conversation_id, first_seen, last_seen, turn_count, entity_total,
+        entity_counts (merged across turns), sources, models, background_count
+        (non-main kind turns).
+        """
+        page = max(1, page)
+        page_size = max(1, min(page_size, 200))
+
+        # Row-level filters (same as the interaction list) plus the grouping
+        # requirement that the row actually belongs to a conversation.
+        conds = self._conditions(
+            sources=sources,
+            wire_formats=wire_formats,
+            kinds=kinds,
+            models=models,
+            policies=policies,
+            languages=languages,
+            entity_type=entity_type,
+            date_from=date_from,
+            date_to=date_to,
+            min_entities=min_entities,
+            q=q,
+        )
+        conds.append(col(Interaction.conversation_id).is_not(None))
+
+        sort_expr = self._conversation_sort(sort)
+        direction = sort_expr.asc() if order == "asc" else sort_expr.desc()
+
+        group_stmt = (
+            select(col(Interaction.conversation_id))
+            .where(*conds)
+            .group_by(col(Interaction.conversation_id))
+            # conversation_id tiebreaker keeps pagination deterministic when the
+            # sort key ties across groups.
+            .order_by(direction, col(Interaction.conversation_id).asc())
+        )
+
+        with Session(self.engine) as session:
+            total = int(
+                session.exec(select(func.count()).select_from(group_stmt.subquery())).one()
+            )
+            conv_ids = list(
+                session.exec(
+                    group_stmt.offset((page - 1) * page_size).limit(page_size)
+                ).all()
+            )
+
+            # Fetch every turn of the page's conversations in one query, then
+            # fold per conversation in Python (turn counts are small).
+            result: list[dict[str, Any]] = []
+            if conv_ids:
+                rows = session.exec(
+                    select(Interaction)
+                    .where(col(Interaction.conversation_id).in_(conv_ids))
+                    .order_by(col(Interaction.created_at).asc())
+                ).all()
+                by_conv: dict[str, list[Interaction]] = {cid: [] for cid in conv_ids}
+                for row in rows:
+                    if row.conversation_id is not None:
+                        by_conv[row.conversation_id].append(row)
+                # Preserve the sorted/paginated order from group_stmt.
+                for cid in conv_ids:
+                    result.append(self.conversation_summary(cid, by_conv[cid]))
+
+        return result, total
+
+    @staticmethod
+    def conversation_summary(
+        conversation_id: str, interactions: Sequence[Interaction]
+    ) -> dict[str, Any]:
+        """Roll a conversation's turns up into a single summary dict."""
+        created = [i.created_at for i in interactions]
+        merged_counts: dict[str, int] = {}
+        for interaction in interactions:
+            for etype, count in interaction.entity_counts.items():
+                merged_counts[etype] = merged_counts.get(etype, 0) + count
+        return {
+            "conversation_id": conversation_id,
+            "first_seen": min(created).isoformat() if created else None,
+            "last_seen": max(created).isoformat() if created else None,
+            "turn_count": len(interactions),
+            "entity_total": sum(i.entity_total for i in interactions),
+            "entity_counts": merged_counts,
+            "sources": sorted({i.source for i in interactions}),
+            "models": sorted({i.model for i in interactions}),
+            "background_count": sum(1 for i in interactions if i.kind != "main"),
+            "input_tokens": sum(i.input_tokens or 0 for i in interactions),
+            "output_tokens": sum(i.output_tokens or 0 for i in interactions),
+        }
+
+    def get_conversation(self, conversation_id: str) -> list[Interaction] | None:
+        """Fetch a conversation's turns (Interaction rows) ordered oldest-first.
+
+        Returns ``None`` when the conversation has no turns. Callers compose the
+        response (detections/texts, plaintext redaction) via the same helpers
+        the single-interaction detail endpoint uses.
+        """
+        with Session(self.engine) as session:
+            interactions = list(
+                session.exec(
+                    select(Interaction)
+                    .where(col(Interaction.conversation_id) == conversation_id)
+                    .order_by(col(Interaction.created_at).asc())
+                ).all()
+            )
+        return interactions or None
 
     def detections(self, interaction_id: int) -> list[Detection]:
         """Per-entity-type detection rows for one interaction, most frequent first."""

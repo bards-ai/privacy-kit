@@ -37,6 +37,7 @@ Supported formats:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from enum import Enum, auto
@@ -353,6 +354,134 @@ def openai_responses_response(body: dict[str, Any], deanon: TextFn) -> None:
             _map_text_blocks(item.get("content"), deanon)
     if isinstance(body.get("output_text"), str):
         body["output_text"] = deanon(body["output_text"])
+
+
+# --- conversation grouping --------------------------------------------------
+
+
+def _first_user_text_anthropic(body: dict[str, Any]) -> str | None:
+    """Extract first user message text from Anthropic Messages API request."""
+    messages = body.get("messages", [])
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        return block["text"]
+    return None
+
+
+def _first_user_text_openai_chat(body: dict[str, Any]) -> str | None:
+    """Extract first user message text from OpenAI Chat Completions request."""
+    messages = body.get("messages", [])
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        return block["text"]
+    return None
+
+
+def _first_user_text_openai_responses(body: dict[str, Any]) -> str | None:
+    """Extract first user message text from OpenAI Responses API request."""
+    inp = body.get("input")
+    if isinstance(inp, str):
+        return inp
+    if isinstance(inp, list):
+        for item in inp:
+            if isinstance(item, dict) and item.get("role") == "user":
+                content = item.get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and isinstance(block.get("text"), str):
+                            return block["text"]
+    return None
+
+
+def _explicit_session_id_openai_responses(body: dict[str, Any]) -> str | None:
+    """Look for a client-supplied per-conversation id on a Responses API call.
+
+    Confirmed by capturing real Codex CLI traffic: Codex sends a top-level
+    ``prompt_cache_key`` and a ``client_metadata.{session_id,thread_id}`` that
+    all hold the *same* UUID, stay identical across every turn of one
+    conversation, and change together when the user starts a new conversation
+    (e.g. Codex's ``/clear``). ``turn_id`` inside ``client_metadata`` changes
+    every turn and must not be used. Prefer the standard ``prompt_cache_key``
+    field (also settable by other Responses-API clients); fall back to
+    Codex's ``client_metadata`` in case a client only sets one of the two.
+    """
+    prompt_cache_key = body.get("prompt_cache_key")
+    if isinstance(prompt_cache_key, str) and prompt_cache_key:
+        return prompt_cache_key
+    client_metadata = body.get("client_metadata")
+    if isinstance(client_metadata, dict):
+        for field in ("thread_id", "session_id"):
+            value = client_metadata.get(field)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def conversation_key(wire: str, body: dict[str, Any]) -> str | None:
+    """Derive a stable conversation identifier for a request.
+
+    Prefers an explicit, client-supplied per-conversation id when the wire
+    format offers one (see ``_explicit_session_id_openai_responses``). Falls
+    back to hashing the first user message's text: since AI APIs are
+    stateless and resend full history on each turn, that text is a stable,
+    deterministic prefix shared by every turn of the same conversation. We
+    hash it to keep it opaque.
+
+    For Cursor hook events, check for an explicit conversation_id field in
+    the body; if absent, return None (each hook stays ungrouped).
+
+    Known limitation: for wire formats without an explicit id, if history is
+    compacted/summarized mid-session, the first message text can change,
+    splitting one real conversation into multiple conversation_id values.
+    Acceptable for v1.
+
+    Args:
+        wire: Wire format string ("anthropic", "openai_chat", "openai_responses", etc.)
+        body: Request body dict
+
+    Returns:
+        A stable conversation id, or None if no signal was found.
+    """
+    if wire == "cursor":
+        # Cursor hook events are single-shot; no history resent. If the hook
+        # payload includes an explicit conversation_id, use it verbatim.
+        conv_id = body.get("conversation_id")
+        return str(conv_id) if conv_id else None
+
+    if wire == "openai_responses":
+        explicit = _explicit_session_id_openai_responses(body)
+        if explicit:
+            return explicit
+
+    # For stateless API formats without an explicit id, extract first user text.
+    first_user = None
+    if wire == "anthropic":
+        first_user = _first_user_text_anthropic(body)
+    elif wire == "openai_chat":
+        first_user = _first_user_text_openai_chat(body)
+    elif wire == "openai_responses":
+        first_user = _first_user_text_openai_responses(body)
+
+    if not first_user:
+        return None
+
+    # Hash to 16 chars to keep it opaque (not storing raw user text).
+    digest = hashlib.sha256(first_user.encode()).hexdigest()
+    return digest[:16]
 
 
 # --- registry + usage extraction --------------------------------------------

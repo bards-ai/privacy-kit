@@ -317,6 +317,62 @@ def register_webapi_routes(
             return JSONResponse({"error": "interaction not found"}, status_code=404)
         return JSONResponse({"deleted": interaction_id})
 
+    @app.get("/api/v1/conversations")
+    async def api_conversations(
+        page: int = 1,
+        page_size: int = 50,
+        sort: str = "last_seen",
+        order: str = "desc",
+        filters: dict[str, Any] = Depends(_list_filters),
+    ) -> JSONResponse:
+        rows, total = store.list_conversations(
+            page=page, page_size=page_size, sort=sort, order=order, **filters
+        )
+        page_size_c = max(1, min(page_size, 200))
+        total_pages = (total + page_size_c - 1) // page_size_c if total else 0
+        return JSONResponse(
+            {
+                "items": rows,
+                "page": max(1, page),
+                "page_size": page_size_c,
+                "total": total,
+                "total_pages": total_pages,
+            }
+        )
+
+    @app.get("/api/v1/conversations/{conversation_id}")
+    async def api_conversation_detail(conversation_id: str) -> JSONResponse:
+        interactions = store.get_conversation(conversation_id)
+        if interactions is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        # Each turn mirrors the single-interaction detail shape, reusing the same
+        # helpers so plaintext redaction (expose_plaintext) is applied identically.
+        turns = []
+        background_count = 0
+        for row in interactions:
+            if row.kind != "main":
+                background_count += 1
+            iid = row.id or -1
+            turns.append(
+                {
+                    "interaction": _interaction_dict(row),
+                    "detections": [_detection_dict(d) for d in store.detections(iid)],
+                    "texts": [
+                        _text_dict(t, expose_plaintext=cfg.expose_plaintext)
+                        for t in store.texts(iid)
+                    ],
+                }
+            )
+        return JSONResponse(
+            {
+                "conversation_id": conversation_id,
+                "summary": store.conversation_summary(conversation_id, interactions),
+                "turns": turns,
+                "background_count": background_count,
+                "texts_redacted": not cfg.expose_plaintext,
+            }
+        )
+
     @app.post("/api/v1/audit/clear")
     async def api_clear(request: Request) -> JSONResponse:
         try:

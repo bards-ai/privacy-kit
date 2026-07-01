@@ -80,6 +80,40 @@ class PlaceholderStreamDecoder:
         return text, ""
 
 
+class CapturingStreamDecoder(PlaceholderStreamDecoder):
+    """A :class:`PlaceholderStreamDecoder` that also accumulates the full text.
+
+    ``anonymized_text`` is the raw upstream stream (placeholders intact);
+    ``original_text`` is the de-anonymized rendering the client received. The
+    proxy uses these to persist the agent's response for the conversation view,
+    without changing how the stream is rewritten.
+    """
+
+    def __init__(self, vault: Vault) -> None:
+        super().__init__(vault)
+        self._raw_parts: list[str] = []
+        self._out_parts: list[str] = []
+
+    def feed(self, delta: str) -> str:
+        self._raw_parts.append(delta)
+        out = super().feed(delta)
+        self._out_parts.append(out)
+        return out
+
+    def flush(self) -> str:
+        out = super().flush()
+        self._out_parts.append(out)
+        return out
+
+    @property
+    def anonymized_text(self) -> str:
+        return "".join(self._raw_parts)
+
+    @property
+    def original_text(self) -> str:
+        return "".join(self._out_parts)
+
+
 # --- per-format delta rewriting + flush injection ---------------------------
 
 

@@ -1,7 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
-import { DeleteInteraction } from "@/components/delete-interaction";
 import { InteractionDetailView } from "@/components/interaction-detail-view";
 import { EmptyState, PageHeader } from "@/components/ui";
 import { apiGetOr } from "@/lib/api";
@@ -10,24 +9,30 @@ import type { InteractionDetail } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-function BackLink() {
-  return (
+export default async function ConversationInteractionPage({
+  params,
+}: {
+  params: { id: string; interactionId: string };
+}) {
+  const backHref = `/conversations/${encodeURIComponent(params.id)}`;
+  const { data } = await apiGetOr<InteractionDetail | null>(
+    `/interactions/${params.interactionId}`,
+    null,
+  );
+
+  const back = (
     <Link
-      href="/conversations"
+      href={backHref}
       className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
     >
-      <ArrowLeft className="h-4 w-4" /> Back to conversations
+      <ArrowLeft className="h-4 w-4" /> Back to conversation
     </Link>
   );
-}
-
-export default async function InteractionDetailPage({ params }: { params: { id: string } }) {
-  const { data } = await apiGetOr<InteractionDetail | null>(`/interactions/${params.id}`, null);
 
   if (!data) {
     return (
       <>
-        <BackLink />
+        {back}
         <EmptyState
           title="Interaction not found"
           description="It may have been deleted, or the gateway is unreachable."
@@ -40,11 +45,10 @@ export default async function InteractionDetailPage({ params }: { params: { id: 
 
   return (
     <>
-      <BackLink />
+      {back}
       <PageHeader
-        title={`Interaction #${it.id}`}
+        title={`Turn #${it.id}`}
         description={`${it.source} · ${formatDateTime(it.created_at)}`}
-        actions={<DeleteInteraction id={it.id} />}
       />
       <InteractionDetailView data={data} />
     </>

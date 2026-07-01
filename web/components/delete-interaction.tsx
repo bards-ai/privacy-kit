@@ -18,7 +18,7 @@ export function DeleteInteraction({ id }: { id: number }) {
     try {
       const res = await fetch(`/api/pk/interactions/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
-      router.push("/interactions");
+      router.push("/conversations");
       router.refresh();
     } catch (e) {
       window.alert(e instanceof Error ? e.message : String(e));

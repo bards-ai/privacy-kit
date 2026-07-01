@@ -19,6 +19,7 @@ from privacy_kit.core.vault import Vault
 from privacy_kit.gateway.config import Settings
 from privacy_kit.gateway.proxy import create_app
 from privacy_kit.gateway.proxy.streaming import (
+    CapturingStreamDecoder,
     PlaceholderStreamDecoder,
     StreamUsage,
     rewrite_sse,
@@ -68,6 +69,18 @@ def test_decoder_flushes_trailing_unclosed_bracket_text() -> None:
     emitted = dec.feed("see [TODO")
     assert emitted == "see "  # holds the ambiguous tail
     assert dec.flush() == "[TODO"  # ...but never loses it
+
+
+def test_capturing_decoder_accumulates_both_renderings() -> None:
+    """The capturing decoder records the raw placeholder stream and the
+    de-anonymized text, split across deltas exactly like the base decoder."""
+    vault = vault_with({"[PERSON_NAME_1]": "John Smith"})
+    dec = CapturingStreamDecoder(vault)
+    for tok in ["Hi ", "[", "PERSON", "_NAME", "_1", "]", "!"]:
+        dec.feed(tok)
+    dec.flush()
+    assert dec.anonymized_text == "Hi [PERSON_NAME_1]!"
+    assert dec.original_text == "Hi John Smith!"
 
 
 async def _collect(lines: list[str], wire: str, vault: Vault) -> str:
@@ -191,6 +204,41 @@ def test_streaming_end_to_end_through_app(tmp_path: Path) -> None:
     texts = store.texts(row.id)
     assert texts and texts[0].original == "I'm John Smith"
     assert texts[0].anonymized == "I'm [PERSON_NAME_1]"
+    # The streamed agent response is captured too (turn had PII).
+    assistant = [t for t in texts if t.category == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].anonymized == "Hello [PERSON_NAME_1]"
+    assert assistant[0].original == "Hello John Smith"
+
+
+def test_streaming_pii_free_turn_stores_no_response(tmp_path: Path) -> None:
+    upstream_lines = [
+        anthropic_delta("Hello there"),
+        "",
+        "event: content_block_stop",
+        'data: {"type":"content_block_stop","index":0}',
+        "",
+    ]
+    store = AuditStore(tmp_path / "audit.sqlite")
+    app = create_app(
+        detector=LiteralDetector({"John Smith": "PERSON_NAME"}),
+        store=store,
+        stream_forwarder=FakeStreamForwarder(upstream_lines),
+        settings=Settings(_env_file=None, policy="pseudonymize"),
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "stream": True,
+            "messages": [{"role": "user", "content": "just say hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    row = store.recent()[0]
+    assert row.id is not None
+    assert all(t.category != "assistant" for t in store.texts(row.id))
 
 
 # --- hardening: usage capture + upstream error passthrough -------------------

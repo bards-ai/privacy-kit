@@ -34,6 +34,7 @@ class Interaction(SQLModel, table=True):
     output_tokens: int | None = None
     entity_total: int = 0  # sum of distinct PII values across all types
     entity_counts: dict[str, int] = Field(default_factory=dict, sa_column=Column(JSON))
+    conversation_id: str | None = Field(default=None, index=True)  # groups same conversation
 
     detections: list["Detection"] = Relationship(back_populates="interaction")
     texts: list["InteractionText"] = Relationship(back_populates="interaction")
@@ -51,14 +52,16 @@ class Detection(SQLModel, table=True):
 
 
 class InteractionText(SQLModel, table=True):
-    """One user-authored or tool/file-data segment for an interaction.
+    """One text segment for an interaction: user, tool, or assistant.
 
-    Unlike Interaction/Detection this stores raw text in plaintext.  Only
-    segments routed through a USER/TOOL author in the request transforms are
-    eligible (user messages and tool/function outputs); system prompts,
-    instruction blocks, tool-call arguments, and assistant turns are excluded
-    at source.  Among eligible segments, which ones actually land here is
-    further governed by ``Settings.save_texts``.  Model output is never stored.
+    Unlike Interaction/Detection this stores raw text in plaintext.  Eligible
+    segments are the human's ``user`` messages, ``tool``/function outputs, and —
+    only when the turn's prompt contained PII — the ``assistant`` response
+    (captured so the conversation view can show what the model said about that
+    PII).  System prompts, instruction blocks, and tool-call arguments are never
+    stored.  Among the eligible user/tool segments, which ones land here is
+    further governed by ``Settings.save_texts``; assistant segments are gated
+    only on the turn having PII.
     """
 
     id: int | None = Field(default=None, primary_key=True)

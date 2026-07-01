@@ -130,6 +130,52 @@ def test_anthropic_anonymizes_forwards_rehydrates_audits(tmp_path: Path) -> None
     assert store.recent()[0].policy == "pseudonymize"
 
 
+def test_conversation_id_groups_turns_of_one_conversation(tmp_path: Path) -> None:
+    """Two turns that share an opening user message land under one conversation
+    id; an unrelated opening message gets a different id."""
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}))
+
+    # Turn 1 of conversation A.
+    client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Let's start project X"}],
+        },
+    )
+    # Turn 2 of conversation A: history resent, plus the new turn.
+    client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "Let's start project X"},
+                {"role": "assistant", "content": "Sure"},
+                {"role": "user", "content": "Add a feature"},
+            ],
+        },
+    )
+    # A separate conversation with a different opening message.
+    client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Totally different topic"}],
+        },
+    )
+
+    rows = sorted(store.recent(), key=lambda r: r.id or 0)
+    assert rows[0].conversation_id is not None
+    assert rows[0].conversation_id == rows[1].conversation_id  # same conversation
+    assert rows[2].conversation_id != rows[0].conversation_id  # different one
+
+    # The grouping surfaces through the store's conversation view.
+    convs, total = store.list_conversations()
+    assert total == 2
+    turn_counts = sorted(c["turn_count"] for c in convs)
+    assert turn_counts == [1, 2]
+
+
 def test_monitor_mode_forwards_original_but_logs_detection(tmp_path: Path) -> None:
     """In monitor mode (the default) the prompt is forwarded unchanged — real PII
     reaches the upstream — but the detection is still logged: entity counts, the
@@ -319,6 +365,48 @@ def test_all_mode_saves_every_segment(tmp_path: Path) -> None:
     rows = store.texts(iid)
     assert [(r.seq, r.original == r.anonymized) for r in rows] == [(0, True), (1, False)]
     assert rows[0].original == "just hello"
+
+
+def test_agent_response_saved_when_turn_has_pii(tmp_path: Path) -> None:
+    """A turn whose prompt contained PII stores the agent's response as an
+    ``assistant`` segment (original rehydrated, anonymized placeholders)."""
+
+    def factory(payload: dict[str, Any]) -> ForwardResult:
+        return ForwardResult(
+            200,
+            {"content": [{"type": "text", "text": "Hi [PERSON_NAME_1], noted."}]},
+            {},
+        )
+
+    client, _, store = build(tmp_path, factory)
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": [{"role": "user", "content": "I'm John Smith"}]},
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    assistant = [t for t in store.texts(iid) if t.category == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].anonymized == "Hi [PERSON_NAME_1], noted."
+    assert assistant[0].original == "Hi John Smith, noted."
+
+
+def test_agent_response_not_saved_when_turn_pii_free(tmp_path: Path) -> None:
+    """A PII-free turn stores no agent response."""
+
+    def factory(payload: dict[str, Any]) -> ForwardResult:
+        return ForwardResult(200, {"content": [{"type": "text", "text": "Hello there!"}]}, {})
+
+    client, _, store = build(tmp_path, factory)
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": [{"role": "user", "content": "just say hi"}]},
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    assert all(t.category != "assistant" for t in store.texts(iid))
 
 
 def test_count_tokens_saves_no_texts(tmp_path: Path) -> None:
