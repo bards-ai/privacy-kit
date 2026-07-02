@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help install install-all check lint type test test-model fmt \
-	setup run up down logs serve dev web-install web-dev web-build \
+	setup run up down logs serve serve-nomodel dev dev-nomodel web-install web-dev web-build \
 	route route-remove route-claude-code route-codex route-cursor \
 	route-claude-code-remove route-codex-remove route-cursor-remove \
 	clean docker-build docker-run
@@ -29,6 +29,9 @@ logs: ## Tail logs from the running stack
 serve: ## Run just the gateway locally (loads the on-device model)
 	uv run privacy-kit serve
 
+serve-nomodel: ## Run the gateway with detection off (no model download; saves conversations only)
+	PII_DETECTOR=null uv run privacy-kit serve
+
 web-install: ## Install the dashboard's npm dependencies
 	npm --prefix web install
 
@@ -42,6 +45,13 @@ dev: ## Run gateway + dashboard locally together (Ctrl-C stops both)
 	@echo "Starting gateway (:8787) and dashboard (:3000)…"
 	@trap 'kill 0' INT TERM; \
 		uv run privacy-kit serve & \
+		API_URL=http://127.0.0.1:8787 npm --prefix web run dev & \
+		wait
+
+dev-nomodel: ## Like `dev` but with detection off (no model; saves conversations only)
+	@echo "Starting gateway (:8787, detector=null) and dashboard (:3000)…"
+	@trap 'kill 0' INT TERM; \
+		PII_DETECTOR=null uv run privacy-kit serve & \
 		API_URL=http://127.0.0.1:8787 npm --prefix web run dev & \
 		wait
 

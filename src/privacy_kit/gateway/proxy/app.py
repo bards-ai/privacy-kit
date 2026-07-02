@@ -307,7 +307,7 @@ def create_app(
         wire: str,
         model: str,
         entity_counts: Mapping[str, int],
-        in_tokens: int | None = None,
+        in_tokens: int | None    = None,
         out_tokens: int | None = None,
         texts: list[tuple[str, str, str]] | None = None,
         kind: str = "main",
@@ -400,11 +400,13 @@ def create_app(
             return text if forward_original else cleaned
 
         def capture_response(parts: list[tuple[str, str]]) -> None:
-            """Persist the agent's response as an assistant segment — but only
-            when this turn's prompt contained PII, so the conversation view can
-            show what the model said about it. PII-free turns store no response.
+            """Persist the agent's response as an assistant segment. Saved when
+            this turn's prompt contained PII (so the conversation view can show
+            what the model said about it), or unconditionally under
+            ``save_texts="all"`` — which is what lets full conversations save
+            when the detector finds nothing (e.g. the "null" detector).
             ``parts`` are (anonymized, original) chunks in emission order."""
-            if not count_vault.type_counts:
+            if not count_vault.type_counts and settings.save_texts != "all":
                 return
             anonymized = "".join(a for a, _ in parts)
             original = "".join(o for _, o in parts)
@@ -620,10 +622,20 @@ def create_app(
 
 
 def build_default_app() -> FastAPI:
-    """Production app: real on-device detector + audit store + httpx upstream."""
-    from privacy_kit.core.detectors import BardsAiOnnxDetector
+    """Production app: real on-device detector + audit store + httpx upstream.
 
+    When ``PII_DETECTOR=null`` the on-device model is skipped entirely (no
+    download, no inference): conversations are still saved but no PII is found.
+    """
     settings = get_settings()
-    detector = BardsAiOnnxDetector(model_id=settings.model_id, threshold=settings.threshold)
-    detector.warmup()
+    if settings.detector == "null":
+        from privacy_kit.core.detectors import NullDetector
+
+        detector: Detector = NullDetector()
+    else:
+        from privacy_kit.core.detectors import BardsAiOnnxDetector
+
+        model = BardsAiOnnxDetector(model_id=settings.model_id, threshold=settings.threshold)
+        model.warmup()
+        detector = model
     return create_app(detector=detector, store=AuditStore(), settings=settings)

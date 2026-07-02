@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from privacy_kit.core.detectors import BardsAiOnnxDetector, build_detector
+from privacy_kit.core.detectors import BardsAiOnnxDetector, NullDetector, build_detector
 from privacy_kit.core.types import Span
 
 
@@ -143,3 +143,11 @@ def test_postprocess_drops_low_confidence_and_overlaps() -> None:
 def test_regex_backend_is_not_supported() -> None:
     with pytest.raises(ValueError, match="Unsupported detector backend: regex"):
         build_detector("regex")
+
+
+def test_null_detector_finds_nothing() -> None:
+    assert NullDetector().detect("Anna Smith lives in Berlin, anna@example.com") == []
+
+
+def test_null_backend_builds_null_detector() -> None:
+    assert isinstance(build_detector("null"), NullDetector)

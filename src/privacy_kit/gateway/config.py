@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PII_", env_file=".env", extra="ignore")
 
     # --- Detection ---
+    detector: Literal["local", "null"] = "local"
+    """Which PII detector to run. "local" loads the on-device model. "null"
+    detects nothing — requests pass through and conversations are still saved,
+    but no PII is found (nothing is pseudonymized, no entity counts recorded).
+    Use "null" to exercise conversation saving without the model download; pair
+    it with ``save_texts="all"`` (the default) so segments are still stored."""
+
     model_id: str = "bardsai/eu-pii-anonimization-multilang"
     """HuggingFace model id for the on-device PII NER model."""
 
@@ -34,12 +41,13 @@ class Settings(BaseSettings):
     in plaintext."""
 
     save_texts: Literal["anonymized", "all"] = "all"
-    """Which eligible request text segments to save (original + anonymized,
-    plaintext).  Only user-authored text and tool/file data are eligible; system
-    prompts, instruction blocks, tool-call arguments, and assistant turns are
-    never stored regardless of this setting.  Among eligible segments:
-    "anonymized" = only those where PII was detected and replaced;
-    "all" = every eligible segment."""
+    """Which text segments to save (original + anonymized, plaintext).  System
+    prompts, instruction blocks, and tool-call arguments are never stored
+    regardless of this setting.  "anonymized" = only user/tool segments where
+    PII was detected and replaced (the assistant turn is stored only when the
+    turn had PII).  "all" = every user/tool segment plus the assistant turn,
+    regardless of whether PII was found — this is what lets full conversations
+    save when the detector is "null"."""
 
     # --- Policy ---
     policy: Literal["monitor", "pseudonymize"] = "monitor"

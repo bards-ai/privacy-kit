@@ -318,9 +318,25 @@ class BardsAiOnnxDetector:
         return result
 
 
+class NullDetector:
+    """A detector that finds nothing.
+
+    Use it to run the gateway without loading the on-device model: requests flow
+    through and conversations are still saved to the audit store, but no PII is
+    detected, so nothing is pseudonymized and no entity counts are recorded. It
+    exists to exercise the conversation-saving path (and the dashboard built on
+    it) without the model download or inference cost.
+    """
+
+    def detect(self, text: str) -> list[Span]:
+        return []
+
+
 def build_detector(backend: str = "local", threshold: float = 0.5) -> Detector:
     if backend in {"local", "bardsai", "onnx"}:
         return BardsAiOnnxDetector(threshold=threshold)
+    if backend in {"null", "none", "off"}:
+        return NullDetector()
     raise ValueError(f"Unsupported detector backend: {backend}")
 
 

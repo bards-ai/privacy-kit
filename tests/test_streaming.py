@@ -224,7 +224,7 @@ def test_streaming_pii_free_turn_stores_no_response(tmp_path: Path) -> None:
         detector=LiteralDetector({"John Smith": "PERSON_NAME"}),
         store=store,
         stream_forwarder=FakeStreamForwarder(upstream_lines),
-        settings=Settings(_env_file=None, policy="pseudonymize"),
+        settings=Settings(_env_file=None, policy="pseudonymize", save_texts="anonymized"),
     )
     client = TestClient(app)
     resp = client.post(

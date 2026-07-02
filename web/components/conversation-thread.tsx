@@ -14,6 +14,8 @@ import { isBackground, kindMeta } from "@/lib/kind";
 import type { ConversationTurn, TextSegment } from "@/lib/types";
 
 function KindBadge({ kind }: { kind: string }) {
+  if (kind === "main") return null;
+
   const m = kindMeta(kind);
   return (
     <span

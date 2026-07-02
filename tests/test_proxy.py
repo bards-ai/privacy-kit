@@ -393,12 +393,13 @@ def test_agent_response_saved_when_turn_has_pii(tmp_path: Path) -> None:
 
 
 def test_agent_response_not_saved_when_turn_pii_free(tmp_path: Path) -> None:
-    """A PII-free turn stores no agent response."""
+    """Under ``save_texts="anonymized"`` a PII-free turn stores no agent response."""
 
     def factory(payload: dict[str, Any]) -> ForwardResult:
         return ForwardResult(200, {"content": [{"type": "text", "text": "Hello there!"}]}, {})
 
-    client, _, store = build(tmp_path, factory)
+    settings = Settings(_env_file=None, policy="pseudonymize", save_texts="anonymized")
+    client, _, store = build(tmp_path, factory, settings=settings)
     resp = client.post(
         "/v1/messages",
         json={"model": "m", "messages": [{"role": "user", "content": "just say hi"}]},
@@ -407,6 +408,28 @@ def test_agent_response_not_saved_when_turn_pii_free(tmp_path: Path) -> None:
     iid = store.recent()[0].id
     assert iid is not None
     assert all(t.category != "assistant" for t in store.texts(iid))
+
+
+def test_agent_response_saved_pii_free_when_save_all(tmp_path: Path) -> None:
+    """Under ``save_texts="all"`` a PII-free turn still stores the agent's
+    response, so full conversations are captured even with no PII (e.g. the
+    "null" detector). This is the save-everything conversation mode."""
+
+    def factory(payload: dict[str, Any]) -> ForwardResult:
+        return ForwardResult(200, {"content": [{"type": "text", "text": "Hello there!"}]}, {})
+
+    settings = Settings(_env_file=None, policy="monitor", save_texts="all")
+    client, _, store = build(tmp_path, factory, settings=settings)
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": [{"role": "user", "content": "just say hi"}]},
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    assistant = [t for t in store.texts(iid) if t.category == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].original == "Hello there!"
 
 
 def test_count_tokens_saves_no_texts(tmp_path: Path) -> None:
