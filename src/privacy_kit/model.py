@@ -36,8 +36,8 @@ class PiiModel:
         self.max_length = max_length
         self.device = device or ("cuda" if _torch_cuda_is_available() else "cpu")
 
-        self.tokenizer: Any | None = None
-        self.model: Any | None = None
+        self.tokenizer: Any = None
+        self.model: Any = None
         self.id2label: dict[int, str] = {}
 
     def from_pretrained(self, model_id: str) -> PiiModel:
@@ -49,25 +49,20 @@ class PiiModel:
             from transformers import AutoModelForTokenClassification, AutoTokenizer
         except ImportError as exc:
             raise RuntimeError(
-                "The transformers backend is optional. Install it with `pip install 'privacy-kit[transformers]'`."
+                "The transformers backend is optional. "
+                "Install it with `pip install 'privacy-kit[transformers]'`."
             ) from exc
 
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForTokenClassification.from_pretrained(model_id).to(
-            self.device
-        )
+        self.model = AutoModelForTokenClassification.from_pretrained(model_id).to(self.device)
         self.model.eval()
-        self.id2label = {
-            int(k): v for k, v in self.model.config.id2label.items()
-        }
+        self.id2label = {int(k): v for k, v in self.model.config.id2label.items()}
         return self
 
     def _ensure_loaded(self) -> None:
         if self.model is None or self.tokenizer is None:
-            raise RuntimeError(
-                "Model not loaded. Call .from_pretrained(model_id) first."
-            )
+            raise RuntimeError("Model not loaded. Call .from_pretrained(model_id) first.")
 
     def __repr__(self) -> str:
         return f"PiiModel(model_id={self.model_id!r}, device={self.device!r})"
@@ -87,7 +82,7 @@ class PiiModel:
         text: str,
         *,
         mode: Literal["simple", "ids"] = "simple",
-    ) -> str | dict:
+    ) -> str | dict[str, Any]:
         """Replace PII spans with placeholders.
 
         * ``mode="simple"`` — returns string with ``[LABEL]`` placeholders.
@@ -175,7 +170,8 @@ class PiiModel:
             import torch
         except ImportError as exc:
             raise RuntimeError(
-                "The transformers backend is optional. Install it with `pip install 'privacy-kit[transformers]'`."
+                "The transformers backend is optional. "
+                "Install it with `pip install 'privacy-kit[transformers]'`."
             ) from exc
 
         with torch.no_grad():
@@ -235,9 +231,7 @@ class PiiModel:
                     span_tokens[-1] = last[:idx]
 
                 entity_text = " ".join(span_tokens)
-                entities.append(
-                    Entity(entity_text, label, start, i, prefix, suffix)
-                )
+                entities.append(Entity(entity_text, label, start, i, prefix, suffix))
             else:
                 i += 1
         return entities
@@ -246,13 +240,11 @@ class PiiModel:
     def _anonymize_simple(tokens: list[str], entities: list[Entity]) -> str:
         result = list(tokens)
         for ent in reversed(entities):
-            result[ent.start_token : ent.end_token] = [
-                f"{ent.prefix}[{ent.label}]{ent.suffix}"
-            ]
+            result[ent.start_token : ent.end_token] = [f"{ent.prefix}[{ent.label}]{ent.suffix}"]
         return " ".join(result)
 
     @staticmethod
-    def _anonymize_ids(tokens: list[str], entities: list[Entity]) -> dict:
+    def _anonymize_ids(tokens: list[str], entities: list[Entity]) -> dict[str, Any]:
         counters: dict[str, int] = defaultdict(int)
         entity_keys: list[str] = []
         for ent in entities:
@@ -261,11 +253,9 @@ class PiiModel:
 
         mapping: dict[str, str] = {}
         result = list(tokens)
-        for ent, key in reversed(list(zip(entities, entity_keys))):
+        for ent, key in reversed(list(zip(entities, entity_keys, strict=True))):
             mapping[key] = ent.text
-            result[ent.start_token : ent.end_token] = [
-                f"{ent.prefix}[{key}]{ent.suffix}"
-            ]
+            result[ent.start_token : ent.end_token] = [f"{ent.prefix}[{key}]{ent.suffix}"]
 
         return {"anonymized_text": " ".join(result), "entities": mapping}
 

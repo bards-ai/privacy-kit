@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from privacy_kit.integrations.langfuse import make_mask
@@ -76,7 +77,7 @@ def make_langfuse_callback(
     return RedactingCallbackHandler()
 
 
-def _mask_inputs_kwarg(kwargs: dict[str, Any], mask) -> dict[str, Any]:
+def _mask_inputs_kwarg(kwargs: dict[str, Any], mask: Callable[[Any], Any]) -> dict[str, Any]:
     if "inputs" not in kwargs:
         return kwargs
     return {**kwargs, "inputs": mask(kwargs["inputs"])}

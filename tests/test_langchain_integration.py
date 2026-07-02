@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import sys
 import types
+from typing import Any
 
 import pytest
 
@@ -12,17 +13,17 @@ def test_make_langfuse_callback_configures_mask(monkeypatch: pytest.MonkeyPatch)
     created_handlers = []
 
     class FakeLangfuse:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             created_clients.append(kwargs)
 
     class FakeCallbackHandler:
-        def __init__(self):
+        def __init__(self) -> None:
             created_handlers.append(self)
 
     fake_langfuse = types.ModuleType("langfuse")
-    fake_langfuse.Langfuse = FakeLangfuse
+    fake_langfuse.Langfuse = FakeLangfuse  # type: ignore[attr-defined]
     fake_langfuse_langchain = types.ModuleType("langfuse.langchain")
-    fake_langfuse_langchain.CallbackHandler = FakeCallbackHandler
+    fake_langfuse_langchain.CallbackHandler = FakeCallbackHandler  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "langfuse", fake_langfuse)
     monkeypatch.setitem(sys.modules, "langfuse.langchain", fake_langfuse_langchain)
@@ -53,7 +54,7 @@ def test_make_langfuse_callback_has_clear_missing_dependency_error(
 
     real_import = builtins.__import__
 
-    def blocked_import(name, *args, **kwargs):
+    def blocked_import(name: str, *args: Any, **kwargs: Any) -> Any:
         if name == "langfuse" or name.startswith("langfuse."):
             raise ModuleNotFoundError(name)
         return real_import(name, *args, **kwargs)

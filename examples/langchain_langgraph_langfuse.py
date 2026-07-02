@@ -7,7 +7,6 @@ from langfuse import get_client
 
 from privacy_kit.integrations.langchain import make_langfuse_callback
 
-
 PROMPT_WITH_PII = """
 Rewrite this customer note as one concise status update.
 

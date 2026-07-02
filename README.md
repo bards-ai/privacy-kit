@@ -1,14 +1,114 @@
 # Privacy Kit
 
-Ready-to-use privacy blocks for LLM apps and observability pipelines, powered by
-[`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang).
+Ready-to-use privacy blocks for LLM apps, observability pipelines, and AI
+tools, powered by
+[`bardsai/eu-pii-anonimization-multilang`](https://huggingface.co/bardsai/eu-pii-anonimization-multilang)
+— an on-device, 24-language EU-PII NER model. No text ever leaves your machine
+to be classified.
 
-The main goal is simple: add local PII redaction before prompts, responses, metadata, tool calls, and other observability payloads leave your app.
+The goal is simple: put a privacy block at every point where data crosses a
+trust boundary. There are two operations and two deployment modes:
 
-## Install
+|  | You own the code (in-process) | You don't (network path) |
+| --- | --- | --- |
+| **Data is stored / observed** → redact, one-way | `Redactor`, Langfuse mask, LangChain callback | OTLP sink scrubbing telemetry |
+| **Data is in a live LLM loop** → pseudonymize, reversible | `Vault` (`anonymize` / `deanonymize`) | **Gateway** for Claude Code, Codex, Cursor |
+
+## The Gateway — a local proxy that scrubs PII on the LLM request path
+
+A local proxy for Claude Code, Codex, and Cursor — tools you can't add a mask callback to, but that all honor a `*_BASE_URL` override. It sits on that path, detects PII, and (optionally) replaces values with `[TYPE_N]` placeholders before they leave your machine, rehydrating the response on the way back.
+
+### Quick start
+
+**Docker** (gateway + dashboard — only Docker needed on the host; model baked into the image at build time):
 
 ```bash
-pip install privacy-kit
+make setup
+make route             # route Claude Code + Codex
+make run   # dashboard → http://127.0.0.1:3000, gateway → :8787
+```
+
+
+Open **http://127.0.0.1:3000**. Start a **new** tool session after routing. For Cursor, also set the chat panel base URL in Settings → Models (`privacy-kit setup cursor` prints the value). Undo with `make route-remove` or `privacy-kit setup … --remove`.
+
+### How it works
+
+```
+                  ┌─────────────────────────────┐
+   request        │     privacy-kit gateway     │     sanitized* request
+    with    ─────▶│     detect PII + audit      │─────▶   sent to the
+    PII           │     pseudonymize*           │         real LLM API
+                  │                             │
+   response       │                             │     response with
+    real    ◀─────│     rehydrate*              │◀─────   placeholders
+   values         └─────────────────────────────┘
+                        * enforce mode only (PII_POLICY=pseudonymize)
+```
+
+
+Claude Code, Codex, and Cursor send your prompts (and file reads) to cloud LLMs — you can't add a mask callback, but they all honor a `*_BASE_URL` override. The gateway is a local proxy on that path: it detects PII, writes an audit row, and — in **enforce** mode (`PII_POLICY=pseudonymize`) — replaces values with `[TYPE_N]` placeholders before they leave your machine, rehydrating the response on the way back (streaming included). The default **monitor** mode only detects and logs; the prompt is forwarded unchanged. Your auth passes through untouched, and every routed tool's interactions land in the same shared [audit log](#dashboard).
+
+Start the gateway first (loads the on-device model, listens on `127.0.0.1:8787`), then route each tool through it:
+
+```bash
+privacy-kit serve            # start the gateway
+privacy-kit report           # summarize the audit log
+privacy-kit scan secrets.txt # one-off detection; --anonymize to mask
+```
+
+#### Claude Code
+
+Routes via `ANTHROPIC_BASE_URL` in `~/.claude/settings.json` (applies to **new** sessions). A Claude Max/Pro **subscription works with no API key** — the gateway forwards your OAuth token and preserves Claude Code's system identifier. (If your version won't send that token to a custom base URL, run `claude setup-token` once.)
+
+```bash
+privacy-kit setup claude-code --apply   # route persistently   (undo: --remove)
+privacy-kit serve --route claude-code   # only while the gateway runs (auto-restores)
+# make route-claude-code / make route-claude-code-remove
+```
+
+#### Codex
+
+`setup codex --apply` adds a dedicated `[model_providers.privacy-kit]` table to `~/.codex/config.toml` and selects it with `model_provider = "privacy-kit"`. It sets `supports_websockets = false` so Codex sends plain HTTP the gateway can sanitize (instead of its default WebSocket transport). Works in **both** auth modes from one setting: a ChatGPT-account login (no API key — experimental) or an API key.
+
+```bash
+privacy-kit setup codex --apply   # route persistently   (undo: --remove)
+# make route-codex / make route-codex-remove
+```
+
+#### Cursor
+
+Cursor's surfaces sit on two backends, so it needs two layers:
+
+1. **Chat/plan panel** — the only surface the gateway can pseudonymize. Set it manually: Settings → Models → Override OpenAI Base URL = `http://127.0.0.1:8787/v1` plus your OpenAI key (`privacy-kit setup cursor` prints these).
+2. **Composer, agent loop, inline edit (Cmd+K), Apply, Tab** bypass that base URL, so they **can't** be pseudonymized — audited via [Cursor hooks](https://cursor.com/docs/hooks). Three hooks are registered: `beforeSubmitPrompt` and `beforeReadFile` (prompt and file-read audit; set `PII_CURSOR_BLOCK=1` to deny on PII, fails open if the gateway is down) and `afterAgentResponse` (records the agent's reply alongside the prompt in the dashboard, observe-only — hooks can't rewrite content, so no redaction is possible here).
+
+```bash
+privacy-kit setup cursor --apply                  # install hooks in ~/.cursor/hooks.json
+privacy-kit setup cursor --apply --scope project  # ...in .cursor/hooks.json instead
+# undo: --remove  ·  make route-cursor / make route-cursor-remove
+```
+
+`make route` / `make route-remove` apply or undo all three at once.
+
+### Dashboard
+
+While the gateway runs, the **web dashboard** — a self-contained JS web UI (`make run` or `make dev`, then `http://127.0.0.1:3000`) — shows the shared audit log for all three tools: overview charts, per-interaction before/after text, filter / sort / search, CSV/JSON export, delete/clear, and an in-memory live PII preview (never stored). No external assets, no CDN.
+
+### Wire formats and telemetry
+
+Supported wire formats: Anthropic Messages (`/v1/messages`, `/v1/messages/count_tokens`), OpenAI Chat Completions, OpenAI Responses. Cursor hooks post to `/v1/cursor-hook`.
+
+
+## In-process library
+
+Use these blocks when you own the code path — Langfuse callbacks, LangChain
+agents, direct redaction, or a `Vault` in your own LLM loop.
+
+### Install
+
+```bash
+pip install privacy-kit                # library blocks (ONNX, no torch)
+pip install 'privacy-kit[gateway]'     # + the local gateway proxy & CLI
 ```
 
 The default install uses a local ONNX backend:
@@ -18,7 +118,7 @@ The default install uses a local ONNX backend:
 - model downloaded from Hugging Face on first use
 - model cached locally by `huggingface-hub`
 
-## Langfuse In One Line
+### Langfuse In One Line
 
 If you already use Langfuse, pass `make_mask()` to the Langfuse client:
 
@@ -29,11 +129,13 @@ from privacy_kit.integrations.langfuse import make_mask
 langfuse = Langfuse(mask=make_mask())
 ```
 
-`make_mask()` recursively scans every string Langfuse sends through the mask callback, including nested `input`, `output`, `metadata`, `messages`, tool calls, reasoning fields, and custom JSON fields.
+`make_mask()` recursively scans every string Langfuse sends through the mask
+callback, including nested `input`, `output`, `metadata`, `messages`, tool calls,
+reasoning fields, and custom JSON fields.
 
 By default, you do not need to configure field paths. Everything text-like is scanned.
 
-## LangGraph / LangChain
+### LangGraph / LangChain
 
 LangChain agents are LangGraph-backed. Install the LangChain extra:
 
@@ -68,20 +170,11 @@ agent.invoke(
 )
 ```
 
-The callback protects LangChain/LangGraph payloads before they are exported to Langfuse. This includes nested message objects and metadata that LangChain passes through callback events.
+The callback protects LangChain/LangGraph payloads before they are exported to
+Langfuse. This includes nested message objects and metadata that LangChain passes
+through callback events.
 
-## Supported Integrations
-
-| Framework | Status | API |
-| --- | --- | --- |
-| Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
-| LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
-| Pydantic AI | Coming soon | Planned integration example |
-| OpenAI SDK | Coming soon | Planned integration example |
-
-Runnable examples live in [`examples/`](examples/). They are kept in the repository for copy-paste onboarding and are not installed as runtime package modules.
-
-## Direct Redaction
+### Direct Redaction
 
 Use `Redactor` directly if you want to redact text or arbitrary JSON-like payloads.
 
@@ -111,7 +204,32 @@ redactor.redact(
 # }
 ```
 
-## Field Selection
+### Reversible Pseudonymization
+
+When the consumer of the text still needs referential consistency — and you
+need the real values back — use a `Vault` instead of redacting:
+
+```python
+from privacy_kit import Vault, anonymize, deanonymize
+
+clean, vault = anonymize(
+    "Jan Kowalski (jan.kowalski@example.com) met Jan Kowalski.",
+    detector,  # any Detector, e.g. privacy_kit.core.build_detector()
+)
+# clean == "[PERSON_NAME_1] ([EMAIL_ADDRESS_1]) met [PERSON_NAME_1]."
+#           same value -> same placeholder, every time
+
+deanonymize(clean, vault)
+# back to the original text
+
+vault.type_counts        # {"PERSON_NAME": 1, "EMAIL_ADDRESS": 1} — safe to log
+```
+
+This is the primitive the gateway is built on: an LLM can reason about
+`[PERSON_NAME_1]` consistently across a whole conversation, and the response
+is rehydrated before the user sees it.
+
+### Field Selection
 
 The default is intentionally broad: scan every string in the payload.
 
@@ -149,38 +267,74 @@ export PII_EXCLUDE_PATHS="metadata.trace_id,usage"
 export PII_EXCLUDE_LABELS="ORGANIZATION_NAME"
 ```
 
-## Model Config
+## Configuration
 
-Default model:
-
-```bash
-export PII_MODEL_ID=bardsai/eu-pii-anonimization-multilang
-```
-
-Optional cache directory:
+Everything reads the same `PII_*` environment variables:
 
 ```bash
-export PII_MODEL_CACHE_DIR=/path/to/model-cache
+export PII_MODEL_ID=bardsai/eu-pii-anonimization-multilang   # default
+export PII_MODEL_CACHE_DIR=/path/to/model-cache              # optional
+export PII_THRESHOLD=0.5            # min confidence for a span to count as PII
+
+# gateway only:
+export PII_POLICY=monitor           # "monitor" (default): detect + log, forward prompt unchanged
+                                    #   (real PII reaches the upstream); "pseudonymize": replace
+                                    #   PII with [TYPE_N] placeholders before forwarding, then rehydrate
+export PII_HOST=127.0.0.1
+export PII_PORT=8787
+export PII_DB_PATH=privacy_kit.sqlite
+export PII_SAVE_TEXTS=anonymized    # save request texts: "anonymized" (default) or "all"
+export PII_ANTHROPIC_UPSTREAM=https://api.anthropic.com
+export PII_OPENAI_UPSTREAM=https://api.openai.com
+export PII_CHATGPT_UPSTREAM=https://chatgpt.com/backend-api  # Codex subscription mode upstream
+export PII_OTEL_DOWNSTREAM=          # optional collector for scrubbed telemetry
 ```
 
-The model is not bundled in the package. It is downloaded on first use and reused from cache after that.
+The model is not bundled in the package. It is downloaded on first use and reused
+from cache after that.
+
+## Supported Integrations
+
+| Target | Status | API |
+| --- | --- | --- |
+| Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
+| LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
+| Claude Code | Ready | gateway: `privacy-kit setup claude-code` |
+| Codex (API key) | Ready | gateway: `privacy-kit setup codex --apply` |
+| Codex (ChatGPT subscription) | Experimental | gateway: `privacy-kit setup codex --apply` |
+| Cursor (chat panel) | Ready | gateway base URL: `privacy-kit setup cursor` (pseudonymizes) |
+| Cursor (Composer / agent) | Ready | hooks: `privacy-kit setup cursor --apply` (audit; block via `PII_CURSOR_BLOCK=1`) |
+| OpenTelemetry logs | Ready | gateway OTLP sink (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) |
+| Pydantic AI | Coming soon | Planned integration example |
+| OpenAI SDK | Coming soon | Planned in-process wrapper on `Vault` |
+
+Runnable examples live in [`examples/`](examples/). They are kept in the
+repository for copy-paste onboarding and are not installed as runtime package
+modules.
 
 ## What Gets Sent Where
 
-privacy-kit runs in your Python process.
+privacy-kit runs on your machine; the model runs locally in-process.
 
-For Langfuse/LangChain use cases:
+For Langfuse/LangChain (observability) use cases:
 
 1. Your app receives or creates raw LLM data.
 2. Your app may still send raw data to your chosen LLM provider.
 3. Before observability export, privacy-kit redacts the Langfuse/LangChain payload.
 4. Langfuse receives the redacted payload.
 
-The goal is to keep raw PII out of observability storage.
+For the gateway use case, what reaches the provider depends on `PII_POLICY`. In
+the default **monitor** mode the prompt is forwarded **unchanged** (raw values
+reach the provider) while the detection is logged locally. Under
+**`PII_POLICY=pseudonymize`** the guarantee is stronger: the **LLM provider itself
+never sees the raw values** — only placeholders. Either way, the local audit store
+keeps entity counts plus the request texts selected by `PII_SAVE_TEXTS` (original
+and anonymized, in plaintext on your machine).
 
 ## Transformers Backend
 
-privacy-kit also keeps the original `PiiModel` API for label-preserving anonymization and direct entity extraction.
+privacy-kit also keeps the original `PiiModel` API for label-preserving
+anonymization and direct entity extraction.
 
 Install the optional Transformers backend:
 
@@ -216,15 +370,33 @@ model.extract_pii(text)
 # }
 ```
 
-Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or extracted PII mappings. The integration APIs use `[REDACTED]` by default because observability systems usually should not store the PII type either.
+Use this lower-level API when you want entity labels such as `[PERSON_NAME]` or
+extracted PII mappings. The integration APIs use `[REDACTED]` by default because
+observability systems usually should not store the PII type either. For
+reversible, indexed placeholders prefer the `Vault` API above — it is idempotent
+and offset-exact.
 
 ## Supported Entity Types
 
 The underlying model recognizes EU-relevant PII categories including:
 
-`PERSON_NAME`, `LOCATION`, `FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`,
-`ORGANIZATION_IDENTIFIER`, `PROPER_NAME`, `RELIGION_OR_BELIEF`,
-`TRADE_UNION_MEMBERSHIP`, and more.
+`PERSON_NAME`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `LOCATION`,
+`FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`, `ORGANIZATION_IDENTIFIER`,
+`PROPER_NAME`, `RELIGION_OR_BELIEF`, `TRADE_UNION_MEMBERSHIP`, and more.
+
+## Development
+
+```bash
+make install      # uv sync with the gateway extra
+make check        # ruff + mypy --strict + pytest — must be green before commit
+make test-model   # tests that download and run the real model
+make serve        # run the gateway locally
+```
+
+A privacy invariant is enforced by lint and tests: code under `src/` must
+never print or log the text it processes (ruff T20 + the log-safety test
+suite), and raw text lives only in the audit store's dedicated texts table
+(scoped by `PII_SAVE_TEXTS`) — never in any other table, log, or output.
 
 ## License
 
