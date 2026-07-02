@@ -76,16 +76,21 @@ _DEFAULT_SOURCE = {
 
 # Cursor hook events we handle, mapped to the body field holding scannable text
 # and the kind of decision the event expects back (prompt => continue; file/tool
-# access => permission). See https://cursor.com/docs/hooks.
+# access => permission; response => none, observe-only). See https://cursor.com/docs/hooks.
 _CURSOR_HOOKS = {
     "beforeSubmitPrompt": ("prompt", "continue"),
     "beforeReadFile": ("content", "permission"),
+    "afterAgentResponse": ("text", "none"),
 }
 
 
 def _cursor_allow(kind: str) -> JSONResponse:
     """The allow decision for a Cursor hook of the given kind."""
-    return JSONResponse({"continue": True} if kind == "continue" else {"permission": "allow"})
+    if kind == "continue":
+        return JSONResponse({"continue": True})
+    if kind == "none":
+        return JSONResponse({})
+    return JSONResponse({"permission": "allow"})
 
 
 def _cursor_deny(kind: str, message: str) -> JSONResponse:
@@ -307,7 +312,7 @@ def create_app(
         wire: str,
         model: str,
         entity_counts: Mapping[str, int],
-        in_tokens: int | None    = None,
+        in_tokens: int | None = None,
         out_tokens: int | None = None,
         texts: list[tuple[str, str, str]] | None = None,
         kind: str = "main",
@@ -451,10 +456,10 @@ def create_app(
                 in_tokens: int | None = None
                 out_tokens: int | None = None
                 if isinstance(payload, dict) and 200 <= status < 300:
-                    resp_parts: list[tuple[str, str]] = []
-                    RESPONSE_TRANSFORMS[wire](payload, deanon_capturing(resp_parts))
+                    err_parts: list[tuple[str, str]] = []
+                    RESPONSE_TRANSFORMS[wire](payload, deanon_capturing(err_parts))
                     in_tokens, out_tokens = extract_tokens(wire, payload)
-                    capture_response(resp_parts)
+                    capture_response(err_parts)
                 _audit(
                     request,
                     wire,
@@ -566,11 +571,12 @@ def create_app(
 
         Cursor surfaces that bypass the gateway base URL — Composer, the agent
         loop, inline edit, Tab — can't be pseudonymized, so the ``privacy-kit hook
-        cursor`` command POSTs each ``beforeSubmitPrompt``/``beforeReadFile`` event
-        here. We scan its text with the warm detector, record an audit row
-        (``source="cursor"``), and return the hook decision: allow under the
-        default monitor policy, or deny when ``PII_CURSOR_BLOCK`` is set and PII was
-        found. Hooks cannot redact, so blocking is the only way to stop PII here.
+        cursor`` command POSTs each hook event here. We scan its text with the warm
+        detector, record an audit row (``source="cursor"``), and return the hook
+        decision: allow under the default monitor policy, or deny when
+        ``PII_CURSOR_BLOCK`` is set and PII was found (pre-response events only).
+        ``afterAgentResponse`` is observe-only — the response already reached the
+        user, so blocking is meaningless; we just audit and return ``{}``.
         Anything unexpected fails open (allow) — privacy-kit must never wedge Cursor.
         """
         try:
@@ -589,12 +595,25 @@ def create_app(
         vault = Vault()
         cleaned = await run_in_threadpool(anonymize_into, text, detector, vault)
         with suppress(Exception):  # auditing must never break the hook path
-            # A prompt event is user-typed; a file-read event is tool/file data.
-            category = "tool" if event == "beforeReadFile" else "user"
-            pairs = [(text, cleaned, category)]
-            if settings.save_texts == "anonymized":
-                pairs = [t for t in pairs if t[0] != t[1]]
             conv_id = conversation_key("cursor", body)
+            if event == "afterAgentResponse":
+                # The response text is the assistant's output. Gate saving on
+                # whether the current exchange's prompt had PII, mirroring the
+                # main proxy's capture_response() logic:
+                #   save_texts="all"        → always keep
+                #   save_texts="anonymized" → keep only when prompt had PII
+                should_save = settings.save_texts == "all" or (
+                    conv_id is not None and store.turn_had_pii(conv_id)
+                )
+                pairs: list[tuple[str, str, str]] = (
+                    [(text, cleaned, "assistant")] if should_save and text.strip() else []
+                )
+            else:
+                # A prompt event is user-typed; a file-read event is tool/file data.
+                category = "tool" if event == "beforeReadFile" else "user"
+                pairs = [(text, cleaned, category)]
+                if settings.save_texts == "anonymized":
+                    pairs = [t for t in pairs if t[0] != t[1]]
             store.record(
                 source="cursor",
                 wire_format=f"cursor:{event}",
@@ -604,6 +623,10 @@ def create_app(
                 conversation_id=conv_id,
                 texts=pairs,
             )
+
+        # afterAgentResponse is observe-only: the response is already delivered.
+        if event == "afterAgentResponse":
+            return _cursor_allow(kind)
 
         if settings.cursor_block and vault.type_counts:
             types = ", ".join(sorted(vault.type_counts))

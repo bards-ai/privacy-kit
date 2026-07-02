@@ -77,9 +77,7 @@ class AuditStore:
                 "CREATE INDEX IF NOT EXISTS ix_interaction_kind ON interaction (kind)"
             )
             if "conversation_id" not in cols:
-                conn.exec_driver_sql(
-                    "ALTER TABLE interaction ADD COLUMN conversation_id VARCHAR"
-                )
+                conn.exec_driver_sql("ALTER TABLE interaction ADD COLUMN conversation_id VARCHAR")
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_interaction_conversation_id "
                 "ON interaction (conversation_id)"
@@ -416,14 +414,16 @@ class AuditStore:
         )
 
         with Session(self.engine) as session:
-            total = int(
-                session.exec(select(func.count()).select_from(group_stmt.subquery())).one()
-            )
-            conv_ids = list(
-                session.exec(
+            total = int(session.exec(select(func.count()).select_from(group_stmt.subquery())).one())
+            # The is_not(None) filter above guarantees no NULL ids; the check
+            # here only narrows the column's Optional type for mypy.
+            conv_ids = [
+                cid
+                for cid in session.exec(
                     group_stmt.offset((page - 1) * page_size).limit(page_size)
                 ).all()
-            )
+                if cid is not None
+            ]
 
             # Fetch every turn of the page's conversations in one query, then
             # fold per conversation in Python (turn counts are small).
@@ -484,6 +484,51 @@ class AuditStore:
                 ).all()
             )
         return interactions or None
+
+    def turn_had_pii(self, conversation_id: str) -> bool:
+        """Return True if the most recent exchange in this cursor conversation detected PII.
+
+        "Most recent exchange" is the run of cursor-source interactions (ordered
+        newest-first) that precede the last interaction already associated with an
+        ``assistant``-category text segment — i.e. the turns since the previous
+        response was recorded. This mirrors the main proxy's ``count_vault.type_counts``
+        check that gates response capture on the *prompt's* PII, not the reply's.
+
+        Returns ``False`` when the conversation has no interactions or when the
+        look-up fails, so callers safely treat the result as "don't save" in those
+        edge cases.
+        """
+        with Session(self.engine) as session:
+            interactions = list(
+                session.exec(
+                    select(Interaction)
+                    .where(
+                        col(Interaction.conversation_id) == conversation_id,
+                        col(Interaction.source) == "cursor",
+                    )
+                    .order_by(col(Interaction.created_at).desc())
+                ).all()
+            )
+            if not interactions:
+                return False
+            # Walk newest-first; stop as soon as we hit an interaction that
+            # already has an assistant text row (= previous exchange's response).
+            # The trailing window up to (not including) that stop point is the
+            # current exchange's prompt/file-read turns.
+            current_exchange: list[Interaction] = []
+            for interaction in interactions:
+                has_assistant = session.exec(
+                    select(InteractionText.id)
+                    .where(
+                        col(InteractionText.interaction_id) == interaction.id,
+                        col(InteractionText.category) == "assistant",
+                    )
+                    .limit(1)
+                ).first()
+                if has_assistant is not None:
+                    break
+                current_exchange.append(interaction)
+        return any(i.entity_total > 0 for i in current_exchange)
 
     def detections(self, interaction_id: int) -> list[Detection]:
         """Per-entity-type detection rows for one interaction, most frequent first."""

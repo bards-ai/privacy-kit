@@ -80,7 +80,7 @@ privacy-kit setup codex --apply   # route persistently   (undo: --remove)
 Cursor's surfaces sit on two backends, so it needs two layers:
 
 1. **Chat/plan panel** — the only surface the gateway can pseudonymize. Set it manually: Settings → Models → Override OpenAI Base URL = `http://127.0.0.1:8787/v1` plus your OpenAI key (`privacy-kit setup cursor` prints these).
-2. **Composer, agent loop, inline edit (Cmd+K), Apply, Tab** bypass that base URL, so they **can't** be pseudonymized — only audited via [Cursor hooks](https://cursor.com/docs/hooks). Hooks can't rewrite, only allow/deny: set `PII_CURSOR_BLOCK=1` to deny PII (fails open if the gateway is down).
+2. **Composer, agent loop, inline edit (Cmd+K), Apply, Tab** bypass that base URL, so they **can't** be pseudonymized — audited via [Cursor hooks](https://cursor.com/docs/hooks). Three hooks are registered: `beforeSubmitPrompt` and `beforeReadFile` (prompt and file-read audit; set `PII_CURSOR_BLOCK=1` to deny on PII, fails open if the gateway is down) and `afterAgentResponse` (records the agent's reply alongside the prompt in the dashboard, observe-only — hooks can't rewrite content, so no redaction is possible here).
 
 ```bash
 privacy-kit setup cursor --apply                  # install hooks in ~/.cursor/hooks.json

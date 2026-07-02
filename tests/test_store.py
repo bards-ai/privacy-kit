@@ -196,3 +196,109 @@ def test_recent_orders_newest_first(tmp_path: Path) -> None:
     rows: list[Interaction] = store.recent(limit=2)
     assert len(rows) == 2
     assert rows[0].source == "tool2"
+
+
+# --- turn_had_pii tests -------------------------------------------------------
+
+
+def test_turn_had_pii_returns_true_when_prompt_detected_pii(tmp_path: Path) -> None:
+    """Returns True if the most recent exchange (since the last assistant row) had PII."""
+    store = make_store(tmp_path)
+    conv_id = "conv-1"
+    # Prompt interaction with PII.
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={"PERSON_NAME": 1},
+        conversation_id=conv_id,
+        texts=[("John Smith, fix this", "PERSON_NAME_1, fix this", "user")],
+    )
+    assert store.turn_had_pii(conv_id) is True
+
+
+def test_turn_had_pii_returns_false_when_prompt_had_no_pii(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    conv_id = "conv-2"
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={},
+        conversation_id=conv_id,
+    )
+    assert store.turn_had_pii(conv_id) is False
+
+
+def test_turn_had_pii_returns_false_for_unknown_conversation(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    assert store.turn_had_pii("no-such-conv") is False
+
+
+def test_turn_had_pii_stops_at_previous_assistant_row(tmp_path: Path) -> None:
+    """The look-back stops at the last interaction that already has an assistant text row.
+
+    Previous exchange's PII must NOT bleed into the current exchange's gate.
+    """
+    store = make_store(tmp_path)
+    conv_id = "conv-3"
+    # Exchange 1: prompt had PII, then response was recorded (with assistant text).
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={"PERSON_NAME": 1},
+        conversation_id=conv_id,
+        texts=[("John Smith", "PERSON_NAME_1", "user")],
+    )
+    # Simulate the assistant response row that terminates exchange 1.
+    store.record(
+        source="cursor",
+        wire_format="cursor:afterAgentResponse",
+        model="m",
+        entity_counts={},
+        conversation_id=conv_id,
+        texts=[("Done.", "Done.", "assistant")],
+    )
+    # Exchange 2: clean prompt, no PII.
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={},
+        conversation_id=conv_id,
+    )
+    # Exchange 2's prompt had no PII, so turn_had_pii for the *current* exchange must be False.
+    assert store.turn_had_pii(conv_id) is False
+
+
+def test_turn_had_pii_finds_pii_in_second_exchange(tmp_path: Path) -> None:
+    """Multiple exchanges: correctly detects PII in the second exchange."""
+    store = make_store(tmp_path)
+    conv_id = "conv-4"
+    # Exchange 1: clean prompt, response.
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={},
+        conversation_id=conv_id,
+    )
+    store.record(
+        source="cursor",
+        wire_format="cursor:afterAgentResponse",
+        model="m",
+        entity_counts={},
+        conversation_id=conv_id,
+        texts=[("OK.", "OK.", "assistant")],
+    )
+    # Exchange 2: PII prompt.
+    store.record(
+        source="cursor",
+        wire_format="cursor:beforeSubmitPrompt",
+        model="m",
+        entity_counts={"EMAIL_ADDRESS": 1},
+        conversation_id=conv_id,
+        texts=[("john@x.com", "[EMAIL_ADDRESS_1]", "user")],
+    )
+    assert store.turn_had_pii(conv_id) is True

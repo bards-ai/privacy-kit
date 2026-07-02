@@ -118,6 +118,11 @@ class CapturingStreamDecoder(PlaceholderStreamDecoder):
 
 
 def _rewrite_anthropic(obj: dict[str, Any], dec: PlaceholderStreamDecoder) -> None:
+    # Only text_delta carries a "text" key. thinking_delta ("thinking") and
+    # signature_delta ("signature") stream model-signed thinking blocks and
+    # must pass through verbatim — the signature is computed over the exact
+    # thinking bytes and re-submission of an altered block is rejected
+    # upstream (see transform._ANTHROPIC_SIGNED_BLOCK_TYPES).
     if obj.get("type") == "content_block_delta":
         delta = obj.get("delta")
         if isinstance(delta, dict) and isinstance(delta.get("text"), str):

@@ -136,3 +136,32 @@ export function TextSegmentsBeforeAfter({ texts }: { texts: TextSegment[] }) {
     </div>
   );
 }
+
+// Plain single-column rendering for text that was never anonymized (model
+// responses only ever get de-anonymized for display, never scrubbed — see
+// transform.py `anthropic_response`/`openai_chat_response` — so there is no
+// before/after to show).
+export function TextSegmentsPlain({ texts }: { texts: TextSegment[] }) {
+  const aligned = useMemo(() => texts.map((t) => alignPii(t.original, t.anonymized)), [texts]);
+  return (
+    <div className="space-y-4">
+      {texts.map((t, i) => {
+        const len = aligned[i].parts.reduce(
+          (n, p) => n + (p.kind === "lit" ? p.text.length : p.span.placeholder.length),
+          0,
+        );
+        return (
+          <Collapsible key={t.id} enabled={len > COLLAPSE_CHARS}>
+            <div className="whitespace-pre-wrap break-words rounded-md border bg-background p-3 text-sm">
+              {t.original === null ? (
+                <span className="text-muted-foreground">[redacted]</span>
+              ) : (
+                <HighlightedText aligned={aligned[i]} view="original" />
+              )}
+            </div>
+          </Collapsible>
+        );
+      })}
+    </div>
+  );
+}

@@ -103,6 +103,18 @@ def _walk_strings(value: Any, fn: TextFn) -> Any:
 
 # --- Anthropic Messages -----------------------------------------------------
 
+# Extended-thinking blocks are model-signed: ``signature`` is computed upstream
+# over the exact thinking bytes, and Anthropic rejects a re-submitted thinking
+# block that was altered. They must therefore round-trip through the proxy
+# verbatim in *both* directions (request history and response). That is also
+# privacy-safe: the model only ever sees anonymized input, so thinking text can
+# contain placeholders but never raw PII — which is equally why responses must
+# not de-anonymize it (restoring real values would change the signed bytes on
+# the next turn's re-submission). ``redacted_thinking`` carries opaque
+# encrypted ``data`` and gets the same treatment. The type strings are pinned
+# against the anthropic SDK's official types in tests/test_wire_fidelity.py.
+_ANTHROPIC_SIGNED_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
 # Claude Code's subscription (Max/Pro OAuth) requests carry this exact string as
 # the first system block. Anthropic validates it as an anti-spoofing check and
 # rejects OAuth requests whose identifier has been altered. It must therefore
@@ -219,12 +231,19 @@ def _anthropic_content(
     ``data_fn`` is applied to ``tool_result`` content (file/command data).
     ``machine`` is applied to ``tool_use`` inputs (LLM-authored function
     arguments — never saved).
+
+    Signed thinking blocks are skipped entirely (see
+    ``_ANTHROPIC_SIGNED_BLOCK_TYPES``); unknown block types keep the generic
+    "rewrite any text field" fallback — over-anonymizing is the safe default
+    for everything that is not signature-protected.
     """
     if isinstance(content, str):
         return text_fn(content)
     if isinstance(content, list):
         for block in content:
             if not isinstance(block, dict):
+                continue
+            if block.get("type") in _ANTHROPIC_SIGNED_BLOCK_TYPES:
                 continue
             if isinstance(block.get("text"), str):
                 block["text"] = text_fn(block["text"])
@@ -259,7 +278,14 @@ def anthropic_request(body: dict[str, Any], anon: AnonFn) -> None:
 
 
 def anthropic_response(body: dict[str, Any], deanon: TextFn) -> None:
-    _map_text_blocks(body.get("content"), deanon)
+    content = body.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") in _ANTHROPIC_SIGNED_BLOCK_TYPES:
+            continue
+        if isinstance(block.get("text"), str):
+            block["text"] = deanon(block["text"])
 
 
 # --- OpenAI Chat Completions ------------------------------------------------
@@ -335,6 +361,13 @@ def openai_responses_request(body: dict[str, Any], anon: AnonFn) -> None:
         for i, item in enumerate(inp):
             if not isinstance(item, dict):
                 continue
+            # type=="reasoning" items (re-submitted model reasoning) must pass
+            # through verbatim: ``encrypted_content`` is opaque and verified
+            # upstream, and the summary text is model-authored from anonymized
+            # input, so it is placeholder-only by construction. They carry
+            # none of the keys rewritten below ("content"/"output"/
+            # "arguments"), so they fall through untouched — pinned in
+            # tests/test_wire_fidelity.py.
             is_new = i > last_assistant
             role = item.get("role")
             text_fn = _user_text(anon, is_new) if role == "user" else machine
@@ -369,8 +402,10 @@ def _first_user_text_anthropic(body: dict[str, Any]) -> str | None:
                 return content
             if isinstance(content, list):
                 for block in content:
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        return block["text"]
+                    if isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            return text
     return None
 
 
@@ -384,8 +419,10 @@ def _first_user_text_openai_chat(body: dict[str, Any]) -> str | None:
                 return content
             if isinstance(content, list):
                 for block in content:
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        return block["text"]
+                    if isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            return text
     return None
 
 
@@ -402,8 +439,10 @@ def _first_user_text_openai_responses(body: dict[str, Any]) -> str | None:
                     return content
                 if isinstance(content, list):
                     for block in content:
-                        if isinstance(block, dict) and isinstance(block.get("text"), str):
-                            return block["text"]
+                        if isinstance(block, dict):
+                            text = block.get("text")
+                            if isinstance(text, str):
+                                return text
     return None
 
 

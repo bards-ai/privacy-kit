@@ -412,7 +412,12 @@ def hook(
 
     raw = sys.stdin.read()
     # The shape Cursor expects when the action is permitted, by event kind.
-    allow = '{"permission": "allow"}' if event == "beforeReadFile" else '{"continue": true}'
+    if event == "beforeReadFile":
+        allow = '{"permission": "allow"}'
+    elif event == "afterAgentResponse":
+        allow = "{}"
+    else:
+        allow = '{"continue": true}'
     if tool != "cursor":
         typer.echo(allow)
         return

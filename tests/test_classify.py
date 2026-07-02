@@ -66,3 +66,82 @@ def test_empty_body_is_main() -> None:
 def test_openai_responses_main() -> None:
     body = {"instructions": "You are Codex", "input": "refactor the parser"}
     assert classify_kind("openai_responses", body) == "main"
+
+
+def test_marker_in_older_turn_does_not_poison_newest_turn() -> None:
+    # A tool result earlier in the resent history happens to quote a safety/
+    # helper marker verbatim (e.g. grepping this module's own source). Only
+    # the newest user turn should decide the kind — stale history must not.
+    body = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "messages": [
+            {"role": "user", "content": "grep the safety markers in classify.py"},
+            {
+                "role": "assistant",
+                "content": "here's the file",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '"you are a command" and "command injection" are the '
+                        "markers, defined near <transcript> handling too",
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "got it"},
+            {"role": "user", "content": "now, how are you handling the last model response?"},
+        ],
+    }
+    assert classify_kind("anthropic", body) == "main"
+
+
+def test_injected_context_in_newest_turn_does_not_poison_kind() -> None:
+    # A real question whose harness-injected context (memory recall, IDE
+    # selection) quotes this module's own marker strings. The wrapper blocks
+    # ride inside the *newest* user turn, so last-turn scoping alone doesn't
+    # protect against them — they must be skipped entirely.
+    body = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "<system-reminder>\nrecalled memory: the safety markers are "
+                        '"command injection" and "you are a command"\n</system-reminder>',
+                    },
+                    {
+                        "type": "text",
+                        "text": "<ide_selection>_SAFETY_MARKERS = ('<policy_spec>',)"
+                        "</ide_selection>",
+                    },
+                    {"type": "text", "text": "is openai installed only for testing purposes?"},
+                ],
+            }
+        ],
+    }
+    assert classify_kind("anthropic", body) == "main"
+
+
+def test_safety_call_still_detected_despite_context_skipping() -> None:
+    # The safety classifier's own payload is not a context wrapper: its policy
+    # spec / transcript text must keep voting.
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "<policy_spec>allow-list</policy_spec> err on the side of blocking",
+            }
+        ]
+    }
+    assert classify_kind("anthropic", body) == "safety"
+
+
+def test_helper_session_wrapper_still_scanned() -> None:
+    # <session>/<transcript> are the helper side-channels' own payload and are
+    # deliberately NOT treated as context wrappers.
+    body = {"messages": [{"role": "user", "content": "<session> ls -la </session>"}]}
+    assert classify_kind("anthropic", body) == "helper"

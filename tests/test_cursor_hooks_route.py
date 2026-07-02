@@ -57,6 +57,16 @@ def test_apply_is_idempotent(tmp_path: Path) -> None:
         assert len(data["hooks"][event]) == 1
 
 
+def test_apply_registers_after_agent_response_event(tmp_path: Path) -> None:
+    hooks = tmp_path / "hooks.json"
+    route.apply_cursor_hooks(COMMAND, path=hooks)
+
+    data = _read(hooks)
+    assert "afterAgentResponse" in data["hooks"]
+    entry = data["hooks"]["afterAgentResponse"][0]
+    assert entry == {"command": f"{COMMAND} afterAgentResponse", "type": "command"}
+
+
 def test_apply_replaces_a_stale_privacy_kit_command(tmp_path: Path) -> None:
     hooks = tmp_path / "hooks.json"
     route.apply_cursor_hooks("/old/path/privacy-kit hook cursor", path=hooks)

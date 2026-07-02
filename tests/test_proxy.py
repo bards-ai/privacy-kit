@@ -1349,6 +1349,173 @@ def test_cursor_hook_unknown_event_allows(tmp_path: Path) -> None:
     assert store.recent() == []  # nothing scanned, nothing recorded
 
 
+def test_cursor_hook_after_agent_response_save_texts_all(tmp_path: Path) -> None:
+    """afterAgentResponse always saves the assistant text when save_texts="all"."""
+    settings = Settings(_env_file=None, save_texts="all", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    # Trigger a preceding prompt hook so the conversation exists.
+    client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "beforeSubmitPrompt",
+            "prompt": "fix the bug",
+            "model": "composer-2.5",
+            "conversation_id": "conv-abc",
+        },
+    )
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "Done! The bug is fixed.",
+            "model": "composer-2.5",
+            "conversation_id": "conv-abc",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {}  # observe-only: empty response object
+
+    # Latest row is the afterAgentResponse audit row.
+    recent = store.recent()
+    assert recent[0].wire_format == "cursor:afterAgentResponse"
+    assert recent[0].source == "cursor"
+    iid = recent[0].id
+    assert iid is not None
+    texts = store.texts(iid)
+    assert len(texts) == 1
+    assert texts[0].category == "assistant"
+    assert texts[0].original == "Done! The bug is fixed."
+
+
+def test_cursor_hook_after_agent_response_save_texts_anonymized_prompt_had_pii(
+    tmp_path: Path,
+) -> None:
+    """Under save_texts="anonymized", the response is saved when the prompt had PII."""
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    conv_id = "conv-pii-123"
+    client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "beforeSubmitPrompt",
+            "prompt": "ping John Smith",
+            "model": "m",
+            "conversation_id": conv_id,
+        },
+    )
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "Sure, I pinged them.",
+            "model": "m",
+            "conversation_id": conv_id,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+    recent = store.recent()
+    response_row = next(r for r in recent if r.wire_format == "cursor:afterAgentResponse")
+    assert response_row.id is not None
+    texts = store.texts(response_row.id)
+    assert len(texts) == 1
+    assert texts[0].category == "assistant"
+    assert texts[0].original == "Sure, I pinged them."
+
+
+def test_cursor_hook_after_agent_response_save_texts_anonymized_prompt_had_no_pii(
+    tmp_path: Path,
+) -> None:
+    """Under save_texts="anonymized", the response is dropped when the prompt had no PII."""
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    conv_id = "conv-clean-456"
+    client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "beforeSubmitPrompt",
+            "prompt": "just say hello",
+            "model": "m",
+            "conversation_id": conv_id,
+        },
+    )
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "Hello there!",
+            "model": "m",
+            "conversation_id": conv_id,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+    recent = store.recent()
+    response_row = next(r for r in recent if r.wire_format == "cursor:afterAgentResponse")
+    assert response_row.id is not None
+    assert store.texts(response_row.id) == []  # no text saved
+
+
+def test_cursor_hook_after_agent_response_never_blocked(tmp_path: Path) -> None:
+    """afterAgentResponse is never denied even when cursor_block=True and PII found."""
+    settings = Settings(_env_file=None, policy="monitor", cursor_block=True)
+    client, _, _ = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "The answer for John Smith is 42.",
+            "model": "m",
+            "conversation_id": "conv-block-test",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {}  # empty object, NOT a deny
+
+
+def test_cursor_hook_after_agent_response_no_conv_id_save_texts_all(tmp_path: Path) -> None:
+    """Without a conversation_id, save_texts="all" still stores the response."""
+    settings = Settings(_env_file=None, save_texts="all", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "Here is the result.",
+            "model": "m",
+        },
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    texts = store.texts(iid)
+    assert len(texts) == 1
+    assert texts[0].category == "assistant"
+
+
+def test_cursor_hook_after_agent_response_no_conv_id_save_texts_anonymized(
+    tmp_path: Path,
+) -> None:
+    """Without a conversation_id under save_texts="anonymized", the response is not saved
+    (cannot correlate with a preceding prompt, so falls back to safe-drop)."""
+    settings = Settings(_env_file=None, save_texts="anonymized", policy="monitor")
+    client, _, store = build(tmp_path, lambda p: ForwardResult(200, {}, {}), settings)
+    resp = client.post(
+        "/v1/cursor-hook",
+        json={
+            "hook_event_name": "afterAgentResponse",
+            "text": "Here is the result.",
+            "model": "m",
+        },
+    )
+    assert resp.status_code == 200
+    iid = store.recent()[0].id
+    assert iid is not None
+    assert store.texts(iid) == []  # no correlation possible → not saved
+
+
 def test_openai_responses_function_call_arguments_not_saved(tmp_path: Path) -> None:
     """function_call arguments (LLM-authored) are anonymized but not saved."""
     settings = Settings(_env_file=None, save_texts="all", policy="pseudonymize")

@@ -55,9 +55,7 @@ def test_conversation_key_openai_chat_and_responses() -> None:
     resp_list = {"input": [{"role": "user", "content": "hi"}]}
     # Each format hashes the same opening text to the same key.
     assert conversation_key("openai_chat", chat) is not None
-    assert conversation_key("openai_responses", resp_str) == conversation_key(
-        "openai_chat", chat
-    )
+    assert conversation_key("openai_responses", resp_str) == conversation_key("openai_chat", chat)
     assert conversation_key("openai_responses", resp_list) == conversation_key(
         "openai_responses", resp_str
     )

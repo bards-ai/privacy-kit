@@ -277,17 +277,19 @@ def remove_codex_route(config_path: Path | None = None) -> dict[str, str]:
 # the agent loop, inline edit (Cmd+K), Apply, and Tab stay on Cursor's own
 # backend and never reach the gateway, so they can't be pseudonymized. Cursor
 # *hooks* (https://cursor.com/docs/hooks), however, fire locally inside the agent
-# loop regardless of backend. We register two of them to scan text the gateway
-# never sees: ``beforeSubmitPrompt`` (the typed instruction) and ``beforeReadFile``
-# (a file Cursor is about to send to the model). Hooks can only allow/deny, never
-# rewrite — so this is audit + optional block, not redaction.
+# loop regardless of backend. We register three of them to audit text the gateway
+# never sees: ``beforeSubmitPrompt`` (the typed instruction), ``beforeReadFile``
+# (a file Cursor is about to send to the model), and ``afterAgentResponse`` (the
+# model's reply, so the dashboard can show both sides of the exchange). The pre-
+# response hooks can allow/deny; ``afterAgentResponse`` is observe-only (the
+# response already reached the user, so no action is possible).
 #
 # ``hooks.json`` lives at ``~/.cursor/hooks.json`` (user) or
 # ``<project>/.cursor/hooks.json`` (project). We edit it like Claude Code's
 # settings.json (reusing ``_load``/``_save``): insert our command idempotently,
 # preserve any hooks the user defined, and on remove drop only our own entries.
 
-CURSOR_HOOK_EVENTS = ("beforeSubmitPrompt", "beforeReadFile")
+CURSOR_HOOK_EVENTS = ("beforeSubmitPrompt", "beforeReadFile", "afterAgentResponse")
 
 # Distinctive marker in the command string that identifies an entry as ours, so
 # re-apply replaces rather than duplicates and remove never touches user hooks.
