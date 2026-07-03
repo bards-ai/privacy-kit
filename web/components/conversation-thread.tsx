@@ -35,16 +35,22 @@ function SegmentGroup({
   heading,
   segments,
   plain,
+  variant,
 }: {
   heading: ReactNode;
   segments: TextSegment[];
   plain?: boolean;
+  variant?: "full" | "diff";
 }) {
   if (segments.length === 0) return null;
   return (
     <div className="space-y-2">
       {heading}
-      {plain ? <TextSegmentsPlain texts={segments} /> : <TextSegmentsBeforeAfter texts={segments} />}
+      {plain ? (
+        <TextSegmentsPlain texts={segments} />
+      ) : (
+        <TextSegmentsBeforeAfter texts={segments} variant={variant} />
+      )}
     </div>
   );
 }
@@ -88,6 +94,7 @@ function TurnCard({ turn, conversationId }: { turn: ConversationTurn; conversati
                 </span>
               }
               segments={prompt}
+              variant="diff"
             />
             <SegmentGroup
               heading={<CategoryBadge category="assistant" />}

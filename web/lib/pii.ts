@@ -80,6 +80,86 @@ export function alignPii(original: string | null, anonymized: string): Aligned {
   return { parts, ok, hasOriginal: true };
 }
 
+// A single logical line of an aligned segment: the ordered parts that fall on
+// it, and whether any of them is a PII span.
+export interface AlignedLine {
+  parts: PiiPart[];
+  hasPii: boolean;
+}
+
+// A run of consecutive lines. `lines` blocks are shown; `gap` blocks are the
+// PII-free stretches collapsed behind a "N lines hidden" expander (their lines
+// are retained so expanding can reveal them in place).
+export type HunkBlock =
+  | { kind: "lines"; lines: AlignedLine[] }
+  | { kind: "gap"; count: number; lines: AlignedLine[] };
+
+// Split an aligned segment into per-line blocks so a caller can show only the
+// neighborhoods around detected PII (git-diff style) and collapse the rest.
+// `context` is how many PII-free lines to keep on each side of a PII line.
+export function hunkify(
+  aligned: Aligned,
+  context = 2,
+): { blocks: HunkBlock[]; piiCount: number; lineCount: number } {
+  // Walk the parts, splitting literal chunks on newlines into lines. A PII span
+  // is attached to the line it starts on (spans never contain a newline).
+  const lines: AlignedLine[] = [];
+  let current: PiiPart[] = [];
+  let currentPii = false;
+  const flush = () => {
+    lines.push({ parts: current, hasPii: currentPii });
+    current = [];
+    currentPii = false;
+  };
+  for (const part of aligned.parts) {
+    if (part.kind === "lit") {
+      const pieces = part.text.split("\n");
+      pieces.forEach((piece, i) => {
+        if (i > 0) flush();
+        if (piece.length > 0) current.push({ kind: "lit", text: piece });
+      });
+    } else {
+      current.push(part);
+      currentPii = true;
+    }
+  }
+  flush();
+
+  const piiCount = aligned.parts.filter((p) => p.kind === "pii").length;
+
+  // No PII at all: one gap covering everything, so the caller can render a
+  // single collapsed "no PII" strip.
+  if (piiCount === 0) {
+    return {
+      blocks: [{ kind: "gap", count: lines.length, lines }],
+      piiCount,
+      lineCount: lines.length,
+    };
+  }
+
+  // Mark lines within `context` of any PII line as visible.
+  const visible = new Array<boolean>(lines.length).fill(false);
+  lines.forEach((line, i) => {
+    if (!line.hasPii) return;
+    for (let j = Math.max(0, i - context); j <= Math.min(lines.length - 1, i + context); j++) {
+      visible[j] = true;
+    }
+  });
+
+  // Coalesce consecutive lines of the same visibility into blocks.
+  const blocks: HunkBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const vis = visible[i];
+    let j = i;
+    while (j < lines.length && visible[j] === vis) j++;
+    const run = lines.slice(i, j);
+    blocks.push(vis ? { kind: "lines", lines: run } : { kind: "gap", count: run.length, lines: run });
+    i = j;
+  }
+  return { blocks, piiCount, lineCount: lines.length };
+}
+
 // Distinct masked values per entity type across several aligned segments, keyed
 // by placeholder (the same value reuses one placeholder within a request).
 export function valuesByType(aligneds: Aligned[]): Map<string, PiiSpan[]> {
