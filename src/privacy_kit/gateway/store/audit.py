@@ -41,6 +41,16 @@ class AuditStore:
 
     def __init__(self, db_path: Path | str | None = None, *, echo: bool = False) -> None:
         path = str(db_path or get_settings().db_path)
+        # For a real filesystem path (not an explicit ``sqlite://`` URL such as
+        # an in-memory DB), make the parent directory and create the file with
+        # owner-only permissions: the audit log holds plaintext PII, so it must
+        # not be world-readable per the process umask.
+        if not path.startswith("sqlite"):
+            file = Path(path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            if not file.exists():
+                file.touch()
+            file.chmod(0o600)
         url = path if path.startswith("sqlite") else f"sqlite:///{path}"
         # check_same_thread=False: the proxy writes from the event loop while the
         # dashboard may read from a threadpool worker; sessions are short-lived

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("pydantic_settings")
@@ -14,7 +16,7 @@ def test_settings_defaults() -> None:
     assert settings.model_id == "bardsai/eu-pii-anonimization-multilang"
     assert 0.0 <= settings.threshold <= 1.0
     assert settings.host == "127.0.0.1"
-    assert str(settings.db_path) == "privacy_kit.sqlite"
+    assert settings.db_path == Path.home() / ".privacy-kit" / "audit.sqlite"
     # Log-only is the default: detect and log PII but forward prompts unchanged.
     assert settings.policy == "monitor"
 
