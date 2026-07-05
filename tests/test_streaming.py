@@ -378,10 +378,13 @@ def test_stream_request_non_sse_json_success_is_rehydrated(tmp_path: Path) -> No
     fwd = FakeStreamForwarder(
         [json.dumps(body)], status=200, headers={"content-type": "application/json"}
     )
+    # Rehydration needs the pseudonymize policy: under monitor the forward vault
+    # stays empty (the upstream saw originals, so no placeholder can come back).
     app = create_app(
         detector=LiteralDetector({"John Smith": "PERSON_NAME"}),
         store=store,
         stream_forwarder=fwd,
+        settings=Settings(_env_file=None, policy="pseudonymize"),
     )
     client = TestClient(app)
     resp = client.post(

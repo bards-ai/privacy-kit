@@ -280,10 +280,17 @@ export PII_THRESHOLD=0.5            # min confidence for a span to count as PII
 export PII_POLICY=monitor           # "monitor" (default): detect + log, forward prompt unchanged
                                     #   (real PII reaches the upstream); "pseudonymize": replace
                                     #   PII with [TYPE_N] placeholders before forwarding, then rehydrate
+export PII_POLICY_OVERRIDES='{"SECRET_*": "block"}'
+                                    # per-entity-type actions layered over PII_POLICY (JSON map).
+                                    #   keys: entity labels or prefix wildcards (SECRET_*);
+                                    #   actions: keep | redact (one-way [REDACTED]) | pseudonymize |
+                                    #   block (refuse the request with 403 before anything is sent).
+                                    #   Overrides apply in both modes — the example above stops
+                                    #   credentials cold even while everything else is only monitored.
 export PII_HOST=127.0.0.1
 export PII_PORT=8787
-export PII_DB_PATH=privacy_kit.sqlite
-export PII_SAVE_TEXTS=anonymized    # save request texts: "anonymized" (default) or "all"
+export PII_DB_PATH=~/.privacy-kit/audit.sqlite  # default; created 0600, reused across working dirs
+export PII_SAVE_TEXTS=all           # save request texts: "all" (default) or "anonymized"
 export PII_ANTHROPIC_UPSTREAM=https://api.anthropic.com
 export PII_OPENAI_UPSTREAM=https://api.openai.com
 export PII_CHATGPT_UPSTREAM=https://chatgpt.com/backend-api  # Codex subscription mode upstream
@@ -383,6 +390,31 @@ The underlying model recognizes EU-relevant PII categories including:
 `PERSON_NAME`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `LOCATION`,
 `FINANCIAL_AMOUNT`, `PERSON_IDENTIFIER`, `ORGANIZATION_IDENTIFIER`,
 `PROPER_NAME`, `RELIGION_OR_BELIEF`, `TRADE_UNION_MEMBERSHIP`, and more.
+
+## Secrets & Checksummed PII (deterministic layer)
+
+An NER model has no label for credentials — and AI coding tools send your
+tools' file reads (including `.env` files, configs, and keys) to cloud LLMs
+with no client-side filtering. So alongside the model, privacy-kit always runs
+a **deterministic layer**: regex + checksum detectors that need no model, no
+network, and microseconds per call.
+
+- **Secrets** (labels prefixed `SECRET_`): AWS/GCP/GitHub/GitLab/OpenAI/
+  Anthropic/Hugging Face/Slack/Stripe/SendGrid/npm/PyPI keys and tokens, JWTs,
+  PEM private-key blocks, credentials in connection URLs (only the password is
+  masked), `Authorization:` header values, and generic `API_KEY=…`-style
+  assignments gated by a Shannon-entropy floor. Patterns are vendored from the
+  [gitleaks](https://github.com/gitleaks/gitleaks) ruleset (MIT) as a curated,
+  tested in-tree table (`make sync-secret-rules` diffs against upstream).
+- **Checksummed PII** (same labels as the model, so placeholders unify):
+  payment cards (Luhn), IBANs (mod-97) → `PAYMENT_CARD`,
+  `BANK_ACCOUNT_IDENTIFIER`; international `+…` phone numbers →
+  `PHONE_NUMBER`; dashed US SSNs → `PERSON_IDENTIFIER`.
+
+Where a deterministic span overlaps a model span, the secret wins — a
+credential never survives because a probabilistic span happened to cover it.
+Detector backends: `local` (default — model + deterministic layer), `model`
+(NER only), `regex` (deterministic only: instant startup, no download), `null`.
 
 ## Development
 

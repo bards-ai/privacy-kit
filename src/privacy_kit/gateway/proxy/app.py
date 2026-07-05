@@ -7,8 +7,10 @@ prompts and other machine-authored text are never stored). What it forwards
 depends on ``Settings.policy``: under the default ``monitor`` policy the prompt is
 sent **unchanged** (real values reach the upstream — detection is logged only);
 under ``pseudonymize`` the PII is replaced with placeholders before forwarding and
-the response is rehydrated with the real values. The client's own auth passes
-through either way.
+the response is rehydrated with the real values. ``Settings.policy_overrides``
+refines either mode per entity type (keep / redact / pseudonymize / block); a
+block-typed detection refuses the request with a 403 before anything is
+forwarded. The client's own auth passes through either way.
 
 Streaming (SSE) responses are de-anonymized on the fly — see ``streaming.py``.
 The upstream stream is opened before the client response is constructed, so an
@@ -39,6 +41,7 @@ from privacy_kit.core.vault import Vault, anonymize_into, deanonymize
 from privacy_kit.gateway.config import Settings, get_settings
 from privacy_kit.gateway.language import detect_language
 from privacy_kit.gateway.otel import register_otel_routes
+from privacy_kit.gateway.policy import PolicyResolver, apply_policy
 from privacy_kit.gateway.proxy.classify import classify_kind
 from privacy_kit.gateway.proxy.streaming import (
     CapturingStreamDecoder,
@@ -293,6 +296,7 @@ def create_app(
     from privacy_kit import __version__
 
     settings = settings or get_settings()
+    resolver = PolicyResolver.from_settings(settings)
     forward: Forwarder = forwarder or HttpxForwarder()
     stream_open: StreamForwarder = stream_forwarder or HttpxStreamForwarder()
     app = FastAPI(title="privacy-kit gateway", version=__version__)
@@ -317,6 +321,7 @@ def create_app(
         texts: list[tuple[str, str, str]] | None = None,
         kind: str = "main",
         conversation_id: str | None = None,
+        policy_label: str | None = None,
     ) -> None:
         source = _source_label(request, _DEFAULT_SOURCE[wire])
         with suppress(Exception):  # auditing must never break the proxy path
@@ -346,7 +351,7 @@ def create_app(
                 wire_format=wire,
                 kind=kind,
                 model=model,
-                policy=settings.policy,
+                policy=policy_label or settings.policy,
                 entity_counts=entity_counts,
                 language=language,
                 input_tokens=in_tokens,
@@ -388,13 +393,19 @@ def create_app(
         # and mismatch the per-turn entity_counts derived from this same vault.
         count_vault = Vault()
 
-        # In "monitor" mode we still run detection (to populate the vault and log
-        # what was present) but forward the original text — real values reach the
-        # upstream. "pseudonymize" forwards the placeholdered text instead.
-        forward_original = settings.policy == "monitor"
+        # Entity types whose resolved action is "block", tallied while the
+        # transform walks the body. Non-empty after the transform → the request
+        # is refused before anything is forwarded. Same single-worker safety
+        # contract as ``captured`` above.
+        blocked: dict[str, int] = {}
 
+        # The per-span policy decides what each detected value becomes in the
+        # forwarded body: the global mode sets the default (monitor → keep,
+        # pseudonymize → placeholder) and ``policy_overrides`` refines it per
+        # entity type. Detection always runs either way, so the audit log
+        # records what was present even when everything is kept.
         def anon(text: str, author: Author, novel: bool) -> str:
-            cleaned = anonymize_into(text, detector, vault)
+            cleaned = apply_policy(text, detector, vault, resolver, blocked)
             if novel and author in (Author.USER, Author.TOOL):
                 # Save count_vault's rendering (per-interaction numbering), not
                 # the forward vault's history-inflated one. Tag with the segment's
@@ -402,7 +413,7 @@ def create_app(
                 saved = anonymize_into(text, detector, count_vault)
                 category = "user" if author is Author.USER else "tool"
                 captured.append((text, saved, category))
-            return text if forward_original else cleaned
+            return cleaned
 
         def capture_response(parts: list[tuple[str, str]]) -> None:
             """Persist the agent's response as an assistant segment. Saved when
@@ -432,6 +443,37 @@ def create_app(
         # Model inference is CPU-bound; run it off the event loop so concurrent
         # requests (Claude Code fires several in parallel) don't stall each other.
         await run_in_threadpool(REQUEST_TRANSFORMS[wire], body, anon)
+
+        if blocked:
+            # A block-typed entity was detected: refuse before anything reaches
+            # the upstream. The audit row records the full detection under
+            # policy="block" so the dashboard shows what was stopped and why.
+            _audit(
+                request,
+                wire,
+                model,
+                count_vault.type_counts,
+                texts=captured,
+                kind=kind,
+                conversation_id=conv_id,
+                policy_label="block",
+            )
+            types = ", ".join(sorted(blocked))
+            return JSONResponse(
+                {
+                    "error": {
+                        "type": "privacy_kit_blocked",
+                        "message": (
+                            f"privacy-kit blocked this request: detected {types}, "
+                            "which your policy forbids sending upstream "
+                            "(PII_POLICY_OVERRIDES)."
+                        ),
+                        "entities": blocked,
+                    }
+                },
+                status_code=403,
+            )
+
         base = upstream.rstrip("/") if upstream else _upstream_base(wire, settings)
         url = base + (path or request.url.path)
         headers = _passthrough_headers(request.headers)
@@ -628,6 +670,17 @@ def create_app(
         if event == "afterAgentResponse":
             return _cursor_allow(kind)
 
+        # Cursor hooks can't rewrite text, so "block" is the only enforceable
+        # action here: deny when a detected type's policy action is block, or
+        # on any PII at all under the blunter cursor_block switch.
+        policy_blocked = sorted(t for t in vault.type_counts if resolver.action_for(t) == "block")
+        if policy_blocked:
+            types = ", ".join(policy_blocked)
+            return _cursor_deny(
+                kind,
+                f"privacy-kit blocked this: detected {types}, which your policy "
+                "forbids sending upstream (PII_POLICY_OVERRIDES).",
+            )
         if settings.cursor_block and vault.type_counts:
             types = ", ".join(sorted(vault.type_counts))
             return _cursor_deny(
@@ -656,9 +709,14 @@ def build_default_app() -> FastAPI:
 
         detector: Detector = NullDetector()
     else:
-        from privacy_kit.core.detectors import BardsAiOnnxDetector
+        from privacy_kit.core.detectors import BardsAiOnnxDetector, CompositeDetector
+        from privacy_kit.core.detectors_regex import ChecksumPiiDetector
+        from privacy_kit.core.detectors_secret import SecretDetector
 
         model = BardsAiOnnxDetector(model_id=settings.model_id, threshold=settings.threshold)
-        model.warmup()
-        detector = model
+        # The deterministic layer rides along with the model: credentials and
+        # checksummable PII must be caught even when the NER model misses them.
+        composite = CompositeDetector([model, SecretDetector(), ChecksumPiiDetector()])
+        composite.warmup()
+        detector = composite
     return create_app(detector=detector, store=AuditStore(), settings=settings)
