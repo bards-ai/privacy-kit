@@ -332,9 +332,73 @@ class NullDetector:
         return []
 
 
+class CompositeDetector:
+    """Union the spans of several detectors into one non-overlapping set.
+
+    When spans from different detectors overlap, precedence is: ``SECRET_*``
+    labels win over everything (a credential must never survive because a
+    probabilistic span happened to cover it), then the wider span, then the
+    higher score. The survivors are returned sorted by position.
+    """
+
+    def __init__(self, detectors: Sequence[Detector]) -> None:
+        if not detectors:
+            raise ValueError("CompositeDetector needs at least one detector")
+        self.detectors = list(detectors)
+
+    def warmup(self) -> None:
+        for detector in self.detectors:
+            warmup = getattr(detector, "warmup", None)
+            if callable(warmup):
+                warmup()
+
+    def detect(self, text: str) -> list[Span]:
+        collected: list[Span] = []
+        for detector in self.detectors:
+            collected.extend(detector.detect(text))
+        return _resolve_overlaps(collected)
+
+
+def _resolve_overlaps(spans: list[Span]) -> list[Span]:
+    """Greedily keep the highest-precedence span of every overlapping cluster."""
+
+    def precedence(span: Span) -> tuple[int, int, float]:
+        is_secret = 1 if span.label.startswith("SECRET_") else 0
+        return (is_secret, span.end - span.start, span.score)
+
+    kept: list[Span] = []
+    for span in sorted(spans, key=precedence, reverse=True):
+        if any(span.overlaps(existing) for existing in kept):
+            continue
+        kept.append(span)
+    kept.sort(key=lambda s: s.start)
+    return kept
+
+
 def build_detector(backend: str = "local", threshold: float = 0.5) -> Detector:
+    """Build the configured detection stack.
+
+    ``local`` (default) is the full stack: the on-device NER model plus the
+    deterministic secret and checksum detectors. ``model`` is the NER model
+    alone. ``regex``/``deterministic`` is the deterministic layer alone — no
+    model download, instant startup, catches credentials and checksummable PII
+    but no names/addresses. ``null`` detects nothing.
+    """
+    from privacy_kit.core.detectors_regex import ChecksumPiiDetector
+    from privacy_kit.core.detectors_secret import SecretDetector
+
     if backend in {"local", "bardsai", "onnx"}:
+        return CompositeDetector(
+            [
+                BardsAiOnnxDetector(threshold=threshold),
+                SecretDetector(),
+                ChecksumPiiDetector(),
+            ]
+        )
+    if backend in {"model", "model-only"}:
         return BardsAiOnnxDetector(threshold=threshold)
+    if backend in {"regex", "deterministic", "secrets"}:
+        return CompositeDetector([SecretDetector(), ChecksumPiiDetector()])
     if backend in {"null", "none", "off"}:
         return NullDetector()
     raise ValueError(f"Unsupported detector backend: {backend}")

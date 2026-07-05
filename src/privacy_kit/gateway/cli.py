@@ -374,9 +374,9 @@ def scan(
     """One-off PII scan of a file or stdin (loads the on-device model)."""
     text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
 
-    from privacy_kit.core.detectors import BardsAiOnnxDetector
+    from privacy_kit.core.detectors import build_detector
 
-    detector = BardsAiOnnxDetector()
+    detector = build_detector()
 
     if anonymize:
         from privacy_kit.core.vault import anonymize as anonymize_text

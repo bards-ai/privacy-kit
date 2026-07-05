@@ -12,7 +12,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from privacy_kit.core.detectors import BardsAiOnnxDetector, NullDetector, build_detector
+from privacy_kit.core.detectors import (
+    BardsAiOnnxDetector,
+    CompositeDetector,
+    NullDetector,
+    build_detector,
+)
 from privacy_kit.core.types import Span
 
 
@@ -140,9 +145,17 @@ def test_postprocess_drops_low_confidence_and_overlaps() -> None:
     assert detector._postprocess(text, spans) == [Span(0, 10, "PERSON_NAME", 0.9)]
 
 
-def test_regex_backend_is_not_supported() -> None:
-    with pytest.raises(ValueError, match="Unsupported detector backend: regex"):
-        build_detector("regex")
+def test_regex_backend_builds_deterministic_composite() -> None:
+    # No model download: the deterministic layer alone.
+    detector = build_detector("regex")
+    assert isinstance(detector, CompositeDetector)
+    spans = detector.detect("key AKIAIOSFODNN7EXAMPLE leaked")
+    assert [s.label for s in spans] == ["SECRET_AWS_ACCESS_KEY"]
+
+
+def test_unknown_backend_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unsupported detector backend: nope"):
+        build_detector("nope")
 
 
 def test_null_detector_finds_nothing() -> None:
