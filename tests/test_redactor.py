@@ -1,3 +1,5 @@
+import pytest
+
 from privacy_kit.core.redactor import Redactor
 from privacy_kit.core.types import Span
 
@@ -171,6 +173,61 @@ def test_expands_partial_email_span_to_full_attached_token() -> None:
     result = redactor.redact_text(text)
 
     assert result == "Email [REDACTED]. Drugi: [REDACTED]!"
+
+
+def test_allow_terms_skips_matching_spans_case_insensitively() -> None:
+    redactor = Redactor(
+        detector=PatternDetector(
+            {
+                "Acme Corp": "ORGANIZATION_NAME",
+                "jan.kowalski@example.com": "EMAIL",
+            }
+        ),
+        allow_terms=["acme corp"],
+    )
+
+    result = redactor.redact_text("Acme Corp wrote to jan.kowalski@example.com")
+
+    assert result == "Acme Corp wrote to [REDACTED]"
+
+
+def test_allow_patterns_use_fullmatch_on_span_text() -> None:
+    redactor = Redactor(
+        detector=PatternDetector(
+            {
+                "85010112345": "PERSONAL_ID",
+                "jan.kowalski@example.com": "EMAIL",
+            }
+        ),
+        allow_patterns=[r"\d{11}"],
+    )
+
+    result = redactor.redact_text("PESEL 85010112345 email jan.kowalski@example.com")
+
+    assert result == "PESEL 85010112345 email [REDACTED]"
+
+
+def test_allow_invalid_pattern_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="Invalid allow_patterns regex"):
+        Redactor(detector=PatternDetector({}), allow_patterns=["(unclosed"])
+
+
+def test_allowlist_checked_before_word_boundary_expansion() -> None:
+    text = "Contact Acme Corp, jan@example.com"
+    redactor = Redactor(
+        detector=StaticDetector(
+            [
+                Span(text.index("Acme"), text.index("Corp") + len("Corp"), "ORGANIZATION_NAME"),
+                Span(text.index("jan"), text.index("example") + len("example"), "EMAIL"),
+            ]
+        ),
+        allow_terms=["Acme Corp"],
+    )
+
+    result = redactor.redact_text(text)
+
+    # Allowed span is dropped before expansion and never merged into the adjacent email.
+    assert result == "Contact Acme Corp, [REDACTED]"
 
 
 def test_keeps_boundary_punctuation_outside_expanded_mask() -> None:

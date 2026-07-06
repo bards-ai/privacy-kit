@@ -15,6 +15,8 @@ def make_mask(
     exclude_labels: set[str] | None = None,
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
+    allow_terms: list[str] | None = None,
+    allow_patterns: list[str] | None = None,
 ) -> Callable[[Any], Any]:
     """Return a Langfuse-compatible mask(data, **kwargs) function."""
 
@@ -28,12 +30,16 @@ def make_mask(
     resolved_exclude_labels = exclude_labels or _labels_from_env("PII_EXCLUDE_LABELS")
     resolved_include_paths = include_paths or _paths_from_env("PII_INCLUDE_PATHS")
     resolved_exclude_paths = exclude_paths or _paths_from_env("PII_EXCLUDE_PATHS")
+    resolved_allow_terms = allow_terms or _paths_from_env("PII_ALLOW_TERMS")
+    resolved_allow_patterns = allow_patterns or _paths_from_env("PII_ALLOW_PATTERNS")
     redactor = Redactor(
         detector=build_detector(backend=resolved_backend, threshold=resolved_threshold),
         include_labels=resolved_include_labels,
         exclude_labels=resolved_exclude_labels,
         include_paths=resolved_include_paths,
         exclude_paths=resolved_exclude_paths,
+        allow_terms=resolved_allow_terms,
+        allow_patterns=resolved_allow_patterns,
     )
 
     def mask(data: Any, **_: Any) -> Any:
