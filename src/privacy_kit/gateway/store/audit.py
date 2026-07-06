@@ -8,7 +8,7 @@ filtered, paginated queries the dashboard API (`/api/v1`) serves. Construct one
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,26 @@ from sqlmodel import Session, SQLModel, col, create_engine, func, select
 
 from privacy_kit.gateway.config import get_settings
 from privacy_kit.gateway.store.models import Detection, Interaction, InteractionText
+
+# Imported history rows carry a "<source>-import" source (e.g.
+# "claude-code-import", set by the importer parsers) so they can be told apart
+# from live traffic. A filter on the live source name is meant to cover its
+# imported sessions too, so base-source filters are expanded to match both.
+IMPORT_SUFFIX = "-import"
+
+
+def _expand_sources(sources: Sequence[str]) -> list[str]:
+    """Add the ``-import`` variant of each requested source so that filtering by
+    a live source (``claude-code``) also matches its imported rows
+    (``claude-code-import``). Requesting the ``-import`` value directly stays
+    exact."""
+    expanded: list[str] = []
+    for source in sources:
+        expanded.append(source)
+        if not source.endswith(IMPORT_SUFFIX):
+            expanded.append(f"{source}{IMPORT_SUFFIX}")
+    return expanded
+
 
 # Columns the list endpoint is allowed to sort by (anything else falls back to
 # created_at), keyed by the name the API accepts.
@@ -108,6 +128,7 @@ class AuditStore:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         conversation_id: str | None = None,
+        created_at: datetime | None = None,
         texts: Sequence[tuple[str, str] | tuple[str, str, str]] = (),
     ) -> int:
         """Persist one interaction, its per-type detections, and any saved text
@@ -117,6 +138,9 @@ class AuditStore:
         segment's origin, ``(original, anonymized, category)`` where category is
         ``"user"`` (human-typed) or ``"tool"`` (tool/file data). Two-tuples default
         the category to ``"user"``.
+
+        ``created_at`` backdates the row — importers pass the message's original
+        timestamp so history sorts correctly; live traffic leaves it unset.
         """
         counts = {etype: int(n) for etype, n in entity_counts.items() if n}
         interaction = Interaction(
@@ -132,6 +156,8 @@ class AuditStore:
             entity_counts=counts,
             conversation_id=conversation_id,
         )
+        if created_at is not None:
+            interaction.created_at = created_at
         with Session(self.engine) as session:
             session.add(interaction)
             session.flush()  # assigns interaction.id
@@ -154,6 +180,25 @@ class AuditStore:
                 )
             session.commit()
             return interaction.id
+
+    def existing_conversation_ids(self, ids: Iterable[str]) -> set[str]:
+        """Subset of ``ids`` that already have at least one interaction.
+
+        Importers use this to skip whole sessions on re-run. Chunked so an
+        arbitrarily large id list never exceeds SQLite's bound-parameter limit.
+        """
+        wanted = [i for i in ids if i]
+        found: set[str] = set()
+        with Session(self.engine) as session:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start : start + 500]
+                rows = session.exec(
+                    select(Interaction.conversation_id)
+                    .where(col(Interaction.conversation_id).in_(chunk))
+                    .distinct()
+                ).all()
+                found.update(r for r in rows if r)
+        return found
 
     # --- Legacy aggregates (used by /ui and `privacy-kit report`) -----------
 
@@ -211,7 +256,7 @@ class AuditStore:
         """Build the WHERE clauses shared by the list, count, and export paths."""
         conds: list[ColumnElement[bool]] = []
         if sources:
-            conds.append(col(Interaction.source).in_(sources))
+            conds.append(col(Interaction.source).in_(_expand_sources(sources)))
         if wire_formats:
             conds.append(col(Interaction.wire_format).in_(wire_formats))
         if kinds:

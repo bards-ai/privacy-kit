@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { ClearLog } from "@/components/clear-log";
+import { ImportHistory } from "@/components/import-history";
 import { PolicySelect, SaveTextsSelect, ThresholdInput } from "@/components/config-controls";
 import { ExportMenu } from "@/components/interactions-controls";
 import { Card, CardContent, CardHeader, CardTitle, ConnectionError, PageHeader } from "@/components/ui";
@@ -93,6 +94,19 @@ export default async function SettingsPage() {
             <Row label="OpenAI">{config.openai_upstream}</Row>
             <Row label="ChatGPT (Codex)">{config.chatgpt_upstream}</Row>
             <Row label="OTLP downstream">{config.otel_downstream ?? "—"}</Row>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Import history</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Import past Claude Code and Codex conversations from this machine into the audit log.
+              PII detection runs on every message; already-imported sessions are skipped.
+            </p>
+            <ImportHistory />
           </CardContent>
         </Card>
 

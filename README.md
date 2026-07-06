@@ -54,6 +54,7 @@ Start the gateway first (loads the on-device model, listens on `127.0.0.1:8787`)
 privacy-kit serve            # start the gateway
 privacy-kit report           # summarize the audit log
 privacy-kit scan secrets.txt # one-off detection; --anonymize to mask
+privacy-kit import           # import past Claude Code / Codex conversations
 ```
 
 #### Claude Code
@@ -93,6 +94,30 @@ privacy-kit setup cursor --apply --scope project  # ...in .cursor/hooks.json ins
 ### Dashboard
 
 While the gateway runs, the **web dashboard** — a self-contained JS web UI (`make run` or `make dev`, then `http://127.0.0.1:3000`) — shows the shared audit log for all three tools: overview charts, per-interaction before/after text, filter / sort / search, CSV/JSON export, delete/clear, and an in-memory live PII preview (never stored). No external assets, no CDN.
+
+### Importing past conversations
+
+The proxy only sees traffic from the moment you route a tool through it. `privacy-kit import` backfills the audit log from the history already on disk: Claude Code session transcripts (`~/.claude/projects/*/*.jsonl`) and Codex rollout files (`~/.codex/sessions/**/rollout-*.jsonl`). Every message runs through the same on-device detection pipeline as live traffic — one placeholder vault per conversation, so a value keeps its `[TYPE_N]` placeholder across turns — and lands in the dashboard with its **original timestamps**, marked `source = claude-code-import` / `codex-import` and `policy = imported` so the existing filters separate it from live traffic. `PII_SAVE_TEXTS` is honored: with `anonymized`, only segments that contained PII are stored.
+
+```bash
+privacy-kit import                                # import everything from both tools
+privacy-kit import --dry-run                      # discover + dedupe only, write nothing
+privacy-kit import -s claude-code --since 2026-06-01
+privacy-kit import -s claude-code --project my-repo
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--source`, `-s` | `claude-code`, `codex` | History source(s) to import; repeat the flag to pass several. |
+| `--since` | — | Only sessions whose file was modified on/after this date. Accepts `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, or `"YYYY-MM-DD HH:MM:SS"` (local time). |
+| `--until` | now | Only sessions whose file was modified on/before this date (same formats; a date-only value covers that whole day). |
+| `--project` | — | Claude Code only: substring filter on the project directory name (e.g. `my-repo` matches `~/.claude/projects/-home-me-my-repo`). |
+| `--dry-run` | off | Discover sessions and report what would be imported without loading the model or writing anything. |
+| `--db` | `PII_DB_PATH` | Audit database to write into, overriding the configured path. |
+
+Re-running is **idempotent**: a session's own UUID becomes its `conversation_id`, and sessions already present (imported earlier *or* captured live through the proxy) are skipped — so periodic re-runs import only what's new. One limitation: a session that gained new turns after being imported is skipped whole; delete it in the dashboard and re-import to pick up the additions. Skipped on principle, mirroring the proxy's storage policy: subagent sidechains, slash-command wrappers, thinking blocks, tool-call arguments, and injected system/developer instructions.
+
+The same importer is exposed in the dashboard (**Settings → Import history**): pick sources, filter by date range or Claude Code project, dry-run to see counts without writing, and watch progress live — the new-vs-imported split updates as you change the filters. Under the hood that's `GET /api/v1/import/preview` (optional `since` / `until` / `project` query params), `POST /api/v1/import` (body `{"sources": ["claude-code", "codex"], "since": "2026-06-01", "until": "2026-06-30", "project": "my-repo", "dry_run": false}`, every field optional, runs in the background, `409` if a run is active), and `GET /api/v1/import/status`. The dashboard always writes to the gateway's configured store — the CLI's `--db` override has no equivalent there.
 
 ### Wire formats and telemetry
 

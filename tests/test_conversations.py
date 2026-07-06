@@ -230,3 +230,42 @@ def test_list_conversations_min_entities_filter(tmp_path: Path) -> None:
     rows, total = store.list_conversations(min_entities=1)
     assert total == 1
     assert rows[0]["conversation_id"] == "rich"
+
+
+def test_list_conversations_source_filter_includes_imported(tmp_path: Path) -> None:
+    """Filtering by a live source surfaces both live and imported conversations;
+    filtering by the "-import" value stays exact."""
+    store = AuditStore(tmp_path / "audit.sqlite")
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="m",
+        entity_counts={"PERSON_NAME": 1},
+        conversation_id="live",
+    )
+    store.record(
+        source="claude-code-import",
+        wire_format="anthropic",
+        model="m",
+        policy="imported",
+        entity_counts={"PERSON_NAME": 1},
+        conversation_id="imported",
+    )
+    store.record(
+        source="codex",
+        wire_format="openai_responses",
+        model="m",
+        entity_counts={"PERSON_NAME": 1},
+        conversation_id="other",
+    )
+
+    # Base source covers its imported rows too.
+    _rows, total = store.list_conversations(sources=["claude-code"])
+    assert total == 2
+    ids = {r["conversation_id"] for r in _rows}
+    assert ids == {"live", "imported"}
+
+    # The "-import" value still selects only the imported conversation.
+    rows, total = store.list_conversations(sources=["claude-code-import"])
+    assert total == 1
+    assert rows[0]["conversation_id"] == "imported"

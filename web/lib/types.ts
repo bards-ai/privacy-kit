@@ -151,3 +151,36 @@ export interface PreviewResult {
   anonymized: string;
   counts: Record<string, number>;
 }
+
+export type ImportSource = "claude-code" | "codex";
+
+export interface ImportPreview {
+  sources: Record<ImportSource, { found: number; new: number; imported: number }>;
+}
+
+export interface ImportRequest {
+  sources: ImportSource[];
+  since?: string;
+  until?: string;
+  project?: string;
+  dry_run?: boolean;
+}
+
+export interface ImportStatus {
+  state: "idle" | "running" | "done" | "error";
+  sources?: string[];
+  dry_run?: boolean;
+  since?: string | null;
+  until?: string | null;
+  project?: string | null;
+  found?: number;
+  skipped?: number;
+  imported?: number;
+  failed?: number;
+  turns?: number;
+  entities?: number;
+  current?: string | null;
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}

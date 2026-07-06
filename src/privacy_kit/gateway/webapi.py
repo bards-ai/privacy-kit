@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import threading
 from datetime import datetime
 from typing import Any, get_args
 
@@ -30,6 +31,8 @@ from privacy_kit import __version__
 from privacy_kit.core.detectors import Detector
 from privacy_kit.core.vault import Vault, anonymize_into
 from privacy_kit.gateway.config import Settings, get_settings
+from privacy_kit.gateway.importer import runner as importer_runner
+from privacy_kit.gateway.importer.runner import ImportJob
 from privacy_kit.gateway.store import AuditStore
 from privacy_kit.gateway.store.models import Detection, Interaction, InteractionText
 
@@ -72,6 +75,11 @@ def _parse_dt(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _localize(dt: datetime) -> datetime:
+    """Naive datetimes are interpreted as local time, like the CLI's --since."""
+    return dt if dt.tzinfo else dt.astimezone()
 
 
 def _interaction_dict(row: Interaction) -> dict[str, Any]:
@@ -232,6 +240,137 @@ def register_webapi_routes(
         for field, value in normalized.items():
             _apply_setting(field, value)
         return JSONResponse(_config_payload())
+
+    # --- History import (Claude Code / Codex transcripts → audit log) --------
+    # One job at a time; state lives in this closure. Detection runs in a
+    # daemon thread (onnxruntime releases the GIL), the UI polls /status.
+    import_state: dict[str, Any] = {"job": None, "thread": None}
+    import_lock = threading.Lock()
+
+    def _job_running() -> bool:
+        thread = import_state["thread"]
+        return thread is not None and thread.is_alive()
+
+    @app.get("/api/v1/import/preview")
+    async def api_import_preview(
+        since: str | None = None, until: str | None = None, project: str | None = None
+    ) -> JSONResponse:
+        """Discovered history sessions per source, split new vs already imported."""
+        since_dt = _parse_dt(since)
+        if since and since_dt is None:
+            return JSONResponse(
+                {"error": "since must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        if since_dt is not None:
+            since_dt = _localize(since_dt)
+        until_dt = importer_runner.parse_until(until) if until else None
+        if until and until_dt is None:
+            return JSONResponse(
+                {"error": "until must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        project_filter = project or None
+
+        def build() -> dict[str, Any]:
+            found = importer_runner.discover(
+                list(importer_runner.SOURCES),
+                since=since_dt,
+                until=until_dt,
+                project=project_filter,
+            )
+            ids = {(src, path): importer_runner.session_id_of(src, path) for src, path in found}
+            existing = store.existing_conversation_ids(
+                [sid for sid in ids.values() if sid is not None]
+            )
+            per_source: dict[str, dict[str, int]] = {
+                src: {"found": 0, "new": 0, "imported": 0} for src in importer_runner.SOURCES
+            }
+            for (src, _path), sid in ids.items():
+                stats = per_source[src]
+                stats["found"] += 1
+                if sid is not None and sid in existing:
+                    stats["imported"] += 1
+                else:
+                    stats["new"] += 1
+            return {"sources": per_source}
+
+        return JSONResponse(await run_in_threadpool(build))
+
+    @app.post("/api/v1/import")
+    async def api_import_start(request: Request) -> JSONResponse:
+        """Start a background import; 409 while one is already running."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        sources = body.get("sources") or list(importer_runner.SOURCES)
+        if not isinstance(sources, list) or any(s not in importer_runner.SOURCES for s in sources):
+            return JSONResponse(
+                {"error": f"sources must be a subset of {list(importer_runner.SOURCES)}"},
+                status_code=400,
+            )
+        since_raw = body.get("since")
+        if since_raw is not None and not isinstance(since_raw, str):
+            return JSONResponse({"error": "since must be a string"}, status_code=400)
+        since = _parse_dt(since_raw)
+        if since_raw and since is None:
+            return JSONResponse(
+                {"error": "since must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        if since is not None:
+            since = _localize(since)
+        until_raw = body.get("until")
+        if until_raw is not None and not isinstance(until_raw, str):
+            return JSONResponse({"error": "until must be a string"}, status_code=400)
+        until = importer_runner.parse_until(until_raw) if until_raw else None
+        if until_raw and until is None:
+            return JSONResponse(
+                {"error": "until must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        project = body.get("project")
+        if project is not None and not isinstance(project, str):
+            return JSONResponse({"error": "project must be a string"}, status_code=400)
+        project = project or None
+        dry_run = body.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            return JSONResponse({"error": "dry_run must be a boolean"}, status_code=400)
+        with import_lock:
+            if _job_running():
+                return JSONResponse({"error": "an import is already running"}, status_code=409)
+            job = ImportJob()
+            # Dry runs keep the app's detector (the CLI swaps in a null one);
+            # run_import short-circuits before detection, so it is never called.
+            thread = threading.Thread(
+                target=importer_runner.run_import,
+                args=(store, detector),
+                kwargs={
+                    "sources": sources,
+                    "since": since,
+                    "until": until,
+                    "project": project,
+                    "dry_run": dry_run,
+                    "settings": cfg,
+                    "job": job,
+                },
+                name="privacy-kit-import",
+                daemon=True,
+            )
+            import_state["job"] = job
+            import_state["thread"] = thread
+            thread.start()
+        return JSONResponse(job.snapshot(), status_code=202)
+
+    @app.get("/api/v1/import/status")
+    async def api_import_status() -> JSONResponse:
+        job = import_state["job"]
+        if job is None:
+            return JSONResponse({"state": "idle"})
+        return JSONResponse(job.snapshot())
 
     @app.get("/api/v1/texts")
     async def api_texts(
