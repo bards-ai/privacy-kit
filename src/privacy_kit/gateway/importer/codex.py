@@ -16,7 +16,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from privacy_kit.gateway.importer.base import ParsedSession, ParsedTurn, parse_timestamp
+from privacy_kit.gateway.importer.base import (
+    ParsedSession,
+    ParsedTurn,
+    parse_timestamp,
+    truncate_title,
+)
 
 SOURCE = "codex-import"
 WIRE_FORMAT = "openai_responses"
@@ -45,6 +50,42 @@ def discover_sessions(
             continue
         paths.append(path)
     return sorted(paths, key=lambda p: p.stat().st_mtime)
+
+
+def preview_info(path: Path) -> tuple[str | None, str | None]:
+    """(title, project) for the import preview list, in one partial scan.
+
+    Project is ``session_meta``'s cwd; title is the first
+    ``event_msg``/``user_message`` (the ``response_item`` user copies carry
+    injected ``<user_instructions>``/``<environment_context>`` wrappers — same
+    preference as ``parse_session``). The title is user text: callers must
+    never log or persist it.
+    """
+    project: str | None = None
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                etype = entry.get("type")
+                if etype == "session_meta":
+                    cwd = payload.get("cwd")
+                    if isinstance(cwd, str) and cwd:
+                        project = cwd
+                elif etype == "event_msg" and payload.get("type") == "user_message":
+                    text = payload.get("message")
+                    if isinstance(text, str) and text.strip():
+                        return truncate_title(text), project
+    except OSError:
+        pass
+    return None, project
 
 
 def parse_session(path: Path) -> ParsedSession | None:

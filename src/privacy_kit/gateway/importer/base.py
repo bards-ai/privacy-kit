@@ -32,6 +32,21 @@ class ParsedSession:
     turns: list[ParsedTurn] = field(default_factory=list)
 
 
+# Preview titles are shown in a one-line list; prompts can embed whole files.
+TITLE_MAX_CHARS = 120
+
+
+def truncate_title(text: str) -> str | None:
+    """First non-empty line of ``text``, capped for preview lists; None when blank."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    line = stripped.splitlines()[0].strip()
+    if len(line) <= TITLE_MAX_CHARS:
+        return line
+    return line[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+
+
 def parse_timestamp(value: object) -> datetime | None:
     """Parse an ISO-8601 timestamp (``...Z`` or offset form) to aware UTC."""
     if not isinstance(value, str) or not value:

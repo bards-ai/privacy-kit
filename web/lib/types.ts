@@ -158,6 +158,21 @@ export interface ImportPreview {
   sources: Record<ImportSource, { found: number; new: number; imported: number }>;
 }
 
+export interface ImportSessionItem {
+  source: ImportSource;
+  id: string | null;
+  title: string | null;
+  project: string | null;
+  modified_at: string;
+  imported: boolean;
+}
+
+export interface ImportSessionsPreview {
+  total: number;
+  titles_redacted: boolean;
+  sessions: ImportSessionItem[];
+}
+
 export interface ImportRequest {
   sources: ImportSource[];
   since?: string;

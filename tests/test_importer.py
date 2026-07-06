@@ -4,6 +4,7 @@ placeholder consistency. Model-free — uses a value-matching stub detector."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -302,6 +303,97 @@ def test_parse_codex_session(tmp_path: Path) -> None:
     assert turn.output_tokens == 12
 
 
+# --- Preview info (titles for the import list) --------------------------------
+
+
+def test_truncate_title() -> None:
+    from privacy_kit.gateway.importer.base import TITLE_MAX_CHARS, truncate_title
+
+    assert truncate_title("short prompt") == "short prompt"
+    assert truncate_title("  first line \n second line ") == "first line"
+    assert truncate_title("   \n\t ") is None
+    capped = truncate_title("x" * 500)
+    assert capped is not None
+    assert len(capped) == TITLE_MAX_CHARS
+    assert capped.endswith("…")
+
+
+def test_claude_preview_info_skips_plumbing(tmp_path: Path) -> None:
+    # meta, command-wrapper, and sidechain entries come first in the fixture;
+    # the title must be the first real human prompt after them.
+    path = write_claude_session(tmp_path)
+    assert claude_code.preview_info(path) == ("email alice@example.com please", "-home-user-proj")
+
+
+def test_claude_preview_info_no_prompt(tmp_path: Path) -> None:
+    project = tmp_path / "-home-user-proj"
+    project.mkdir(parents=True)
+    path = project / "plumbing.jsonl"
+    lines = [
+        _cc_line(type="mode", mode="normal"),
+        _cc_line(type="user", isMeta=True, message={"role": "user", "content": "meta text"}),
+        _cc_line(
+            type="user",
+            message={"role": "user", "content": "<command-name>/clear</command-name>"},
+        ),
+        _cc_line(
+            type="user",
+            message={"role": "user", "content": [{"type": "tool_result", "content": "output"}]},
+        ),
+        "not json",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert claude_code.preview_info(path) == (None, "-home-user-proj")
+
+
+def test_claude_preview_info_skips_injected_blocks(tmp_path: Path) -> None:
+    # <ide_opened_file>/<system-reminder> blocks ride along inside real prompts;
+    # they are imported but must not become the title.
+    project = tmp_path / "-home-user-proj"
+    project.mkdir(parents=True)
+    path = project / "ide.jsonl"
+    lines = [
+        _cc_line(
+            type="user",
+            message={
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<ide_opened_file>README.md</ide_opened_file>"},
+                    {"type": "text", "text": " <system-reminder>ctx</system-reminder>"},
+                ],
+            },
+        ),
+        _cc_line(
+            type="user",
+            message={
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<ide_opened_file>a.py</ide_opened_file>"},
+                    {"type": "text", "text": "fix the bug"},
+                ],
+            },
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert claude_code.preview_info(path) == ("fix the bug", "-home-user-proj")
+
+
+def test_codex_preview_info_prefers_event_msg(tmp_path: Path) -> None:
+    # the developer/user response_item copies carry injected wrappers; the
+    # event_msg user_message is the clean human text. Project is the meta cwd.
+    path = write_codex_session(tmp_path)
+    assert codex.preview_info(path) == ("call bob@example.com", "/home/user/proj")
+
+
+def test_codex_preview_info_no_user_message(tmp_path: Path) -> None:
+    day = tmp_path / "2026" / "07" / "02"
+    day.mkdir(parents=True)
+    path = day / f"rollout-2026-07-02T16-43-38-{CODEX_ID}.jsonl"
+    meta = {"type": "session_meta", "payload": {"id": CODEX_ID, "cwd": "/home/user/proj"}}
+    path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+    assert codex.preview_info(path) == (None, "/home/user/proj")
+
+
 # --- Runner ------------------------------------------------------------------
 
 
@@ -419,7 +511,9 @@ def test_run_import_dry_run_writes_nothing(tmp_path: Path) -> None:
 # --- API endpoints -----------------------------------------------------------
 
 
-def _make_import_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, AuditStore]:
+def _make_import_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, expose_plaintext: bool = True
+) -> tuple[Any, AuditStore]:
     """TestClient over fixture history roots, plus the store it writes to."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -439,7 +533,7 @@ def _make_import_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     app = create_app(
         detector=make_detector(),
         store=store,
-        settings=Settings(_env_file=None, save_texts="all"),
+        settings=Settings(_env_file=None, save_texts="all", expose_plaintext=expose_plaintext),
     )
     return TestClient(app), store
 
@@ -547,3 +641,72 @@ def test_import_api_filters_and_dry_run(tmp_path: Path, monkeypatch: pytest.Monk
     assert status["imported"] == 2
     preview = client.get("/api/v1/import/preview").json()
     assert all(s["imported"] == 1 for s in preview["sources"].values())
+
+
+def test_import_preview_sessions_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _store = _make_import_client(tmp_path, monkeypatch)
+    claude_path = tmp_path / "claude" / "-home-user-proj" / f"{SESSION_ID}.jsonl"
+    codex_path = (
+        tmp_path / "codex" / "2026" / "07" / "02" / f"rollout-2026-07-02T16-43-38-{CODEX_ID}.jsonl"
+    )
+    now = time.time()
+    os.utime(claude_path, (now - 100, now - 100))
+    os.utime(codex_path, (now, now))
+
+    body = client.get("/api/v1/import/preview/sessions").json()
+    assert body["total"] == 2
+    assert body["titles_redacted"] is False
+    newest, oldest = body["sessions"]  # newest-first by mtime
+    assert newest["source"] == "codex"
+    assert newest["id"] == CODEX_ID
+    assert newest["title"] == "call bob@example.com"
+    assert newest["project"] == "/home/user/proj"
+    assert newest["imported"] is False
+    assert datetime.fromisoformat(newest["modified_at"]).tzinfo is not None
+    assert oldest == {
+        "source": "claude-code",
+        "id": SESSION_ID,
+        "title": "email alice@example.com please",
+        "project": "-home-user-proj",
+        "modified_at": oldest["modified_at"],
+        "imported": False,
+    }
+
+    # limit caps the page, not the total
+    body = client.get("/api/v1/import/preview/sessions", params={"limit": 1}).json()
+    assert body["total"] == 2
+    assert [s["source"] for s in body["sessions"]] == ["codex"]
+
+    # sources filter and validation
+    body = client.get("/api/v1/import/preview/sessions", params={"sources": "codex"}).json()
+    assert [s["source"] for s in body["sessions"]] == ["codex"]
+    for bad in ({"sources": "nope"}, {"since": "not-a-date"}, {"until": "not-a-date"}):
+        resp = client.get("/api/v1/import/preview/sessions", params=bad)
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    # project narrows claude-code only (codex ignores it by design)
+    body = client.get("/api/v1/import/preview/sessions", params={"project": "zzz"}).json()
+    assert [s["source"] for s in body["sessions"]] == ["codex"]
+
+    # importing flips the flag
+    assert client.post("/api/v1/import", json={"sources": ["claude-code"]}).status_code == 202
+    assert _wait_done(client)["state"] == "done"
+    body = client.get("/api/v1/import/preview/sessions").json()
+    flags = {s["source"]: s["imported"] for s in body["sessions"]}
+    assert flags == {"claude-code": True, "codex": False}
+
+
+def test_import_preview_sessions_respects_expose_plaintext(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _store = _make_import_client(tmp_path, monkeypatch, expose_plaintext=False)
+
+    body = client.get("/api/v1/import/preview/sessions").json()
+    assert body["titles_redacted"] is True
+    assert all(s["title"] is None for s in body["sessions"])
+    by_source = {s["source"]: s for s in body["sessions"]}
+    # The Claude project slug is path-derived; the Codex cwd would need a file
+    # read, so it is withheld along with the title.
+    assert by_source["claude-code"]["project"] == "-home-user-proj"
+    assert by_source["codex"]["project"] is None

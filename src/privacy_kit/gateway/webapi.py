@@ -82,6 +82,20 @@ def _localize(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.astimezone()
 
 
+def _import_window(since: str | None, until: str | None) -> tuple[datetime | None, datetime | None]:
+    """Parse the import endpoints' since/until params; raises ``ValueError``
+    with the user-facing message on bad input."""
+    since_dt = _parse_dt(since)
+    if since and since_dt is None:
+        raise ValueError("since must be an ISO date or datetime (e.g. 2026-06-01)")
+    if since_dt is not None:
+        since_dt = _localize(since_dt)
+    until_dt = importer_runner.parse_until(until) if until else None
+    if until and until_dt is None:
+        raise ValueError("until must be an ISO date or datetime (e.g. 2026-06-01)")
+    return since_dt, until_dt
+
+
 def _interaction_dict(row: Interaction) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -256,20 +270,10 @@ def register_webapi_routes(
         since: str | None = None, until: str | None = None, project: str | None = None
     ) -> JSONResponse:
         """Discovered history sessions per source, split new vs already imported."""
-        since_dt = _parse_dt(since)
-        if since and since_dt is None:
-            return JSONResponse(
-                {"error": "since must be an ISO date or datetime (e.g. 2026-06-01)"},
-                status_code=400,
-            )
-        if since_dt is not None:
-            since_dt = _localize(since_dt)
-        until_dt = importer_runner.parse_until(until) if until else None
-        if until and until_dt is None:
-            return JSONResponse(
-                {"error": "until must be an ISO date or datetime (e.g. 2026-06-01)"},
-                status_code=400,
-            )
+        try:
+            since_dt, until_dt = _import_window(since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         project_filter = project or None
 
         def build() -> dict[str, Any]:
@@ -294,6 +298,74 @@ def register_webapi_routes(
                 else:
                     stats["new"] += 1
             return {"sources": per_source}
+
+        return JSONResponse(await run_in_threadpool(build))
+
+    @app.get("/api/v1/import/preview/sessions")
+    async def api_import_preview_sessions(
+        since: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        sources: str | None = None,
+        limit: int = 200,
+    ) -> JSONResponse:
+        """Newest-first list of the sessions the filters would cover, capped at
+        ``limit``. Titles are the first human prompt of each session — raw user
+        text, so they are gated by ``expose_plaintext`` like every other
+        plaintext-returning endpoint (and never logged)."""
+        try:
+            since_dt, until_dt = _import_window(since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if sources:
+            wanted = [s for s in sources.split(",") if s]
+            if not wanted or any(s not in importer_runner.SOURCES for s in wanted):
+                return JSONResponse(
+                    {"error": f"sources must be a subset of {list(importer_runner.SOURCES)}"},
+                    status_code=400,
+                )
+        else:
+            wanted = list(importer_runner.SOURCES)
+        project_filter = project or None
+        cap = max(1, min(limit, 500))
+
+        def build() -> dict[str, Any]:
+            found = importer_runner.discover(
+                wanted, since=since_dt, until=until_dt, project=project_filter
+            )
+            found.sort(key=lambda item: item[1].stat().st_mtime, reverse=True)
+            page = [
+                (src, path, importer_runner.session_id_of(src, path)) for src, path in found[:cap]
+            ]
+            existing = store.existing_conversation_ids(
+                [sid for _src, _path, sid in page if sid is not None]
+            )
+            sessions: list[dict[str, Any]] = []
+            for src, path, sid in page:
+                if cfg.expose_plaintext:
+                    title, proj = importer_runner.session_preview(src, path)
+                else:
+                    # No file reads at all when plaintext is off; the Claude
+                    # project slug comes from the path, the Codex cwd doesn't.
+                    title = None
+                    proj = path.parent.name if src == "claude-code" else None
+                sessions.append(
+                    {
+                        "source": src,
+                        "id": sid,
+                        "title": title,
+                        "project": proj,
+                        "modified_at": datetime.fromtimestamp(path.stat().st_mtime)
+                        .astimezone()
+                        .isoformat(),
+                        "imported": sid is not None and sid in existing,
+                    }
+                )
+            return {
+                "total": len(found),
+                "titles_redacted": not cfg.expose_plaintext,
+                "sessions": sessions,
+            }
 
         return JSONResponse(await run_in_threadpool(build))
 

@@ -148,6 +148,14 @@ def session_id_of(source: str, path: Path) -> str | None:
     return None
 
 
+def session_preview(source: str, path: Path) -> tuple[str | None, str | None]:
+    """(title, project) for the preview list; reads the file only as far as
+    the first human prompt. The title is user text — never log it."""
+    if source == "claude-code":
+        return claude_code.preview_info(path)
+    return codex.preview_info(path)
+
+
 def _import_session(
     store: AuditStore, detector: Detector, session: ParsedSession, settings: Settings
 ) -> tuple[int, int]:

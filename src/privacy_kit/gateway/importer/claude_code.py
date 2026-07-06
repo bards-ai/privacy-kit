@@ -15,13 +15,22 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from privacy_kit.gateway.importer.base import ParsedSession, ParsedTurn, parse_timestamp
+from privacy_kit.gateway.importer.base import (
+    ParsedSession,
+    ParsedTurn,
+    parse_timestamp,
+    truncate_title,
+)
 
 SOURCE = "claude-code-import"
 WIRE_FORMAT = "anthropic"
 
 # Prompts that are slash-command plumbing rather than human text.
 _COMMAND_PREFIXES = ("<command-name>", "<local-command-caveat>", "<local-command-stdout>")
+
+# Injected blocks that ride along inside a real prompt. They ARE imported
+# (the live proxy forwards them too) but make useless preview titles.
+_TITLE_SKIP_PREFIXES = ("<ide_opened_file>", "<system-reminder>")
 
 
 def default_root() -> Path:
@@ -87,6 +96,42 @@ def _user_segments(content: object) -> tuple[list[tuple[str, str]], bool]:
                             if isinstance(text, str) and text.strip():
                                 segments.append(("tool", text))
     return segments, is_prompt
+
+
+def preview_info(path: Path) -> tuple[str | None, str | None]:
+    """(title, project) for the import preview list, without a full parse.
+
+    Title is the first real human prompt — same skip rules as parsing
+    (meta/sidechain entries, command-wrapper prompts) via ``_user_segments``.
+    The title is user text: callers must never log or persist it.
+    """
+    project = path.parent.name
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "user":
+                    continue
+                if entry.get("isSidechain") or entry.get("isMeta"):
+                    continue
+                message = entry.get("message")
+                if not isinstance(message, dict):
+                    continue
+                segments, is_prompt = _user_segments(message.get("content"))
+                if not is_prompt:
+                    continue
+                for category, text in segments:
+                    if category != "user":
+                        continue
+                    if text.lstrip().startswith(_TITLE_SKIP_PREFIXES):
+                        continue
+                    return truncate_title(text), project
+    except OSError:
+        pass
+    return None, project
 
 
 def parse_session(path: Path) -> ParsedSession | None:
