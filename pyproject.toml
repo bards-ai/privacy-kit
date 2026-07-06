@@ -51,6 +51,9 @@ transformers = [
 langfuse = [
     "langfuse>=3.0.0",
 ]
+langsmith = [
+    "langsmith>=0.1.81",
+]
 langchain = [
     "langchain>=1.0.0",
     "langchain-groq>=1.0.0",
@@ -133,6 +136,7 @@ module = [
     "langchain.*",
     "langgraph.*",
     "langdetect.*",
+    "langsmith.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

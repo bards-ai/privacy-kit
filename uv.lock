@@ -2060,6 +2060,9 @@ langchain = [
 langfuse = [
     { name = "langfuse" },
 ]
+langsmith = [
+    { name = "langsmith" },
+]
 test = [
     { name = "pytest" },
 ]
@@ -2092,6 +2095,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'langchain'", specifier = ">=3.0.0" },
     { name = "langfuse", marker = "extra == 'langfuse'", specifier = ">=3.0.0" },
     { name = "langgraph", marker = "extra == 'langchain'", specifier = ">=1.0.0" },
+    { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.1.81" },
     { name = "onnxruntime", specifier = ">=1.18.0" },
     { name = "pydantic", marker = "extra == 'gateway'", specifier = ">=2.7" },
     { name = "pydantic-settings", marker = "extra == 'gateway'", specifier = ">=2.3" },
@@ -2105,7 +2109,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'gateway'", specifier = ">=0.30" },
     { name = "zstandard", marker = "extra == 'gateway'", specifier = ">=0.22" },
 ]
-provides-extras = ["gateway", "transformers", "langfuse", "langchain", "test"]
+provides-extras = ["gateway", "transformers", "langfuse", "langsmith", "langchain", "test"]
 
 [package.metadata.requires-dev]
 dev = [
