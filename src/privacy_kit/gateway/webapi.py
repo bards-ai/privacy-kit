@@ -411,6 +411,14 @@ def register_webapi_routes(
         dry_run = body.get("dry_run", False)
         if not isinstance(dry_run, bool):
             return JSONResponse({"error": "dry_run must be a boolean"}, status_code=400)
+        exclude_raw = body.get("exclude_session_ids")
+        if exclude_raw is not None and (
+            not isinstance(exclude_raw, list) or any(not isinstance(x, str) for x in exclude_raw)
+        ):
+            return JSONResponse(
+                {"error": "exclude_session_ids must be a list of strings"}, status_code=400
+            )
+        exclude_session_ids = set(exclude_raw) if exclude_raw else None
         with import_lock:
             if _job_running():
                 return JSONResponse({"error": "an import is already running"}, status_code=409)
@@ -425,6 +433,7 @@ def register_webapi_routes(
                     "since": since,
                     "until": until,
                     "project": project,
+                    "exclude_session_ids": exclude_session_ids,
                     "dry_run": dry_run,
                     "settings": cfg,
                     "job": job,

@@ -178,6 +178,7 @@ export interface ImportRequest {
   since?: string;
   until?: string;
   project?: string;
+  exclude_session_ids?: string[];
   dry_run?: boolean;
 }
 

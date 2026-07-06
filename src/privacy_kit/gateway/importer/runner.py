@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
@@ -208,6 +209,7 @@ def run_import(
     since: datetime | None = None,
     until: datetime | None = None,
     project: str | None = None,
+    exclude_session_ids: Collection[str] | None = None,
     dry_run: bool = False,
     settings: Settings | None = None,
     job: ImportJob | None = None,
@@ -217,8 +219,10 @@ def run_import(
     """Import history sessions into the audit store.
 
     Sessions whose id already exists in the store are skipped, which makes
-    re-runs incremental. A session that fails to parse or record is logged and
-    counted, never fatal to the batch. ``dry_run`` discovers and dedupes only.
+    re-runs incremental. ``exclude_session_ids`` drops user-deselected sessions
+    up front (ids without a filename-derived session id can't be excluded). A
+    session that fails to parse or record is logged and counted, never fatal to
+    the batch. ``dry_run`` discovers and dedupes only.
     """
     job = job or ImportJob()
     settings = settings or get_settings()
@@ -239,6 +243,13 @@ def run_import(
             claude_root=claude_root,
             codex_root=codex_root,
         )
+        if exclude_session_ids:
+            excluded = set(exclude_session_ids)
+            found = [
+                (src, p)
+                for src, p in found
+                if (sid := session_id_of(src, p)) is None or sid not in excluded
+            ]
         job.found = len(found)
 
         known_ids = [sid for src, p in found if (sid := session_id_of(src, p))]

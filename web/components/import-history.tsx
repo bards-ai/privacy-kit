@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, DownloadCloud } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, DownloadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -44,6 +44,9 @@ export function ImportHistory() {
   const [projectDraft, setProjectDraft] = useState("");
   const [dryRun, setDryRun] = useState(false);
   const [showList, setShowList] = useState(false);
+  // Sessions the user unchecked in the list; sent as an exclude list so
+  // sessions beyond the list's display cap stay included.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -94,6 +97,15 @@ export function ImportHistory() {
     );
   }
 
+  function toggleExcluded(id: string) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   async function onStart() {
     setStarting(true);
     setStartError(null);
@@ -102,6 +114,7 @@ export function ImportHistory() {
       if (since) body.since = since;
       if (until) body.until = until;
       if (project) body.project = project;
+      if (excluded.size > 0) body.exclude_session_ids = [...excluded];
       const res = await fetch("/api/pk/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -241,8 +254,34 @@ export function ImportHistory() {
                     {sessionList.sessions.map((s, i) => (
                       <tr
                         key={`${s.source}:${s.id ?? i}`}
-                        className="border-b last:border-0 hover:bg-accent/50"
+                        className={cn(
+                          "border-b last:border-0 hover:bg-accent/50",
+                          s.imported && "opacity-60",
+                        )}
                       >
+                        <td
+                          className="px-3 py-2"
+                          title={
+                            s.imported
+                              ? "Already in the audit log — skipped on import"
+                              : undefined
+                          }
+                        >
+                          {s.imported ? (
+                            <Check
+                              className="h-3.5 w-3.5 text-muted-foreground"
+                              aria-label="Already imported"
+                            />
+                          ) : s.id ? (
+                            <input
+                              type="checkbox"
+                              checked={!excluded.has(s.id)}
+                              onChange={() => s.id && toggleExcluded(s.id)}
+                              disabled={running}
+                              aria-label="Include this session in the import"
+                            />
+                          ) : null}
+                        </td>
                         <td className="w-full max-w-0 truncate px-3 py-2" title={s.title ?? undefined}>
                           {s.title ?? (
                             <span className="italic text-muted-foreground">Untitled session</span>
@@ -281,6 +320,19 @@ export function ImportHistory() {
               ) : null}
             </>
           )
+        ) : null}
+        {excluded.size > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {formatNumber(excluded.size)} unchecked — skipped on import.{" "}
+            <button
+              type="button"
+              onClick={() => setExcluded(new Set())}
+              disabled={running}
+              className="underline hover:text-foreground"
+            >
+              Recheck all
+            </button>
+          </p>
         ) : null}
       </div>
 

@@ -508,6 +508,28 @@ def test_run_import_dry_run_writes_nothing(tmp_path: Path) -> None:
         assert session.exec(select(Interaction)).all() == []
 
 
+def test_run_import_excludes_selected_sessions(tmp_path: Path) -> None:
+    claude_root = tmp_path / "claude"
+    codex_root = tmp_path / "codex"
+    write_claude_session(claude_root)
+    write_codex_session(codex_root)
+    store = AuditStore(tmp_path / "audit.sqlite")
+
+    job = run_import(
+        store,
+        make_detector(),
+        exclude_session_ids={SESSION_ID},
+        settings=Settings(save_texts="all"),
+        claude_root=claude_root,
+        codex_root=codex_root,
+    )
+    assert job.state == "done"
+    assert (job.found, job.imported, job.skipped) == (1, 1, 0)
+    with Session(store.engine) as session:
+        rows = session.exec(select(Interaction)).all()
+    assert {row.conversation_id for row in rows} == {CODEX_ID}
+
+
 # --- API endpoints -----------------------------------------------------------
 
 
@@ -695,6 +717,27 @@ def test_import_preview_sessions_endpoint(tmp_path: Path, monkeypatch: pytest.Mo
     body = client.get("/api/v1/import/preview/sessions").json()
     flags = {s["source"]: s["imported"] for s in body["sessions"]}
     assert flags == {"claude-code": True, "codex": False}
+
+
+def test_import_api_exclude_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _store = _make_import_client(tmp_path, monkeypatch)
+
+    for bad in ({"exclude_session_ids": "x"}, {"exclude_session_ids": [1]}):
+        assert client.post("/api/v1/import", json=bad).status_code == 400
+
+    resp = client.post("/api/v1/import", json={"exclude_session_ids": [SESSION_ID]})
+    assert resp.status_code == 202
+    status = _wait_done(client)
+    assert status["state"] == "done"
+    assert (status["found"], status["imported"]) == (1, 1)
+
+    # the excluded claude session stays new; the codex one was imported
+    preview = client.get("/api/v1/import/preview").json()
+    assert preview["sources"]["claude-code"] == {"found": 1, "new": 1, "imported": 0}
+    assert preview["sources"]["codex"]["imported"] == 1
+    sessions = client.get("/api/v1/import/preview/sessions").json()["sessions"]
+    flags = {s["source"]: s["imported"] for s in sessions}
+    assert flags == {"claude-code": False, "codex": True}
 
 
 def test_import_preview_sessions_respects_expose_plaintext(
