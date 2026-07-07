@@ -282,6 +282,8 @@ def register_webapi_routes(
                 since=since_dt,
                 until=until_dt,
                 project=project_filter,
+                claude_root=cfg.claude_root,
+                codex_root=cfg.codex_root,
             )
             ids = {(src, path): importer_runner.session_id_of(src, path) for src, path in found}
             existing = store.existing_conversation_ids(
@@ -331,7 +333,12 @@ def register_webapi_routes(
 
         def build() -> dict[str, Any]:
             found = importer_runner.discover(
-                wanted, since=since_dt, until=until_dt, project=project_filter
+                wanted,
+                since=since_dt,
+                until=until_dt,
+                project=project_filter,
+                claude_root=cfg.claude_root,
+                codex_root=cfg.codex_root,
             )
             found.sort(key=lambda item: item[1].stat().st_mtime, reverse=True)
             page = [

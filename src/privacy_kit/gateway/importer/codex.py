@@ -13,6 +13,7 @@ they are skipped in favor of the event stream. Assistant text is the
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +29,8 @@ WIRE_FORMAT = "openai_responses"
 
 
 def default_root() -> Path:
-    return Path.home() / ".codex" / "sessions"
+    home = os.environ.get("CODEX_HOME")  # Codex's own relocation variable
+    return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
 
 def discover_sessions(

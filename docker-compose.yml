@@ -22,8 +22,17 @@ services:
       # PII_POLICY: pseudonymize
       # For a hosted/multi-user deployment, redact stored originals in the API:
       # PII_EXPOSE_PLAINTEXT: "false"
+      # History import reads session files from these paths (mounted below)
+      # instead of the container user's home.
+      PII_CLAUDE_ROOT: /import/claude-projects
+      PII_CODEX_ROOT: /import/codex-sessions
     volumes:
       - privacy-kit-data:/data
+      # Host session history, read-only, so Settings → "Import history" can see
+      # it. If a directory doesn't exist on the host, Docker creates it empty
+      # (root-owned) and that source simply shows 0 sessions.
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/projects:/import/claude-projects:ro
+      - ${CODEX_HOME:-${HOME}/.codex}/sessions:/import/codex-sessions:ro
     ports:
       - "127.0.0.1:8787:8787"
     restart: unless-stopped

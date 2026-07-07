@@ -12,6 +12,7 @@ model returned, mirroring what the live proxy would have captured.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -34,7 +35,8 @@ _TITLE_SKIP_PREFIXES = ("<ide_opened_file>", "<system-reminder>")
 
 
 def default_root() -> Path:
-    return Path.home() / ".claude" / "projects"
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")  # Claude Code's own relocation variable
+    return (Path(config_dir) if config_dir else Path.home() / ".claude") / "projects"
 
 
 def discover_sessions(

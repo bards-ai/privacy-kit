@@ -226,6 +226,8 @@ def run_import(
     """
     job = job or ImportJob()
     settings = settings or get_settings()
+    claude_root = claude_root or settings.claude_root
+    codex_root = codex_root or settings.codex_root
     sources = [s for s in (sources or list(SOURCES)) if s in SOURCES]
     job.state = "running"
     job.sources = sources

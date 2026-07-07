@@ -29,6 +29,8 @@ make run   # dashboard → http://127.0.0.1:3000, gateway → :8787
 ```
 
 
+The compose file mounts your `~/.claude/projects` and `~/.codex/sessions` read-only into the gateway container (via `PII_CLAUDE_ROOT` / `PII_CODEX_ROOT`) so **Settings → Import history** can see your local session history.
+
 Open **http://127.0.0.1:3000**. Start a **new** tool session after routing. For Cursor, also set the chat panel base URL in Settings → Models (`privacy-kit setup cursor` prints the value). Undo with `make route-remove` or `privacy-kit setup … --remove`.
 
 ### How it works
@@ -313,6 +315,10 @@ export PII_ANTHROPIC_UPSTREAM=https://api.anthropic.com
 export PII_OPENAI_UPSTREAM=https://api.openai.com
 export PII_CHATGPT_UPSTREAM=https://chatgpt.com/backend-api  # Codex subscription mode upstream
 export PII_OTEL_DOWNSTREAM=          # optional collector for scrubbed telemetry
+export PII_CLAUDE_ROOT=              # history import: Claude Code sessions dir
+                                     #   (default $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects)
+export PII_CODEX_ROOT=               # history import: Codex sessions dir
+                                     #   (default $CODEX_HOME/sessions, else ~/.codex/sessions)
 ```
 
 The model is not bundled in the package. It is downloaded on first use and reused

@@ -179,3 +179,21 @@ def test_codex_preview_info_no_user_message(tmp_path: Path) -> None:
     meta = {"type": "session_meta", "payload": {"id": CODEX_ID, "cwd": "/home/user/proj"}}
     path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
     assert codex.preview_info(path) == (None, "/home/user/proj")
+
+
+def test_claude_default_root_honors_config_dir_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    assert claude_code.default_root() == tmp_path / "cfg" / "projects"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert claude_code.default_root() == Path.home() / ".claude" / "projects"
+
+
+def test_codex_default_root_honors_codex_home_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "cx"))
+    assert codex.default_root() == tmp_path / "cx" / "sessions"
+    monkeypatch.delenv("CODEX_HOME")
+    assert codex.default_root() == Path.home() / ".codex" / "sessions"

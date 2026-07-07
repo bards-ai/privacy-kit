@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     regardless of whether PII was found — this is what lets full conversations
     save when the detector is "null"."""
 
+    # --- History import ---
+    claude_root: Path | None = None
+    """Directory of Claude Code session files to import. Defaults to
+    ``~/.claude/projects`` of the gateway process user. Set ``PII_CLAUDE_ROOT``
+    when that home is not the real one, e.g. in Docker where the host
+    directory is mounted elsewhere."""
+
+    codex_root: Path | None = None
+    """Directory of Codex session files to import. Defaults to
+    ``~/.codex/sessions``. See ``claude_root``."""
+
     # --- Policy ---
     policy: Literal["monitor", "pseudonymize"] = "monitor"
     """How the proxy treats detected PII before forwarding upstream.

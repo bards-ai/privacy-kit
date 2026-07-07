@@ -80,6 +80,21 @@ def test_run_import_end_to_end(tmp_path: Path, store: AuditStore) -> None:
     assert [t.category for t in texts] == ["user", "tool", "assistant"]
 
 
+def test_run_import_roots_default_from_settings(tmp_path: Path, store: AuditStore) -> None:
+    """PII_CLAUDE_ROOT/PII_CODEX_ROOT relocate discovery (Docker mounts them)."""
+    write_claude_session(tmp_path / "claude")
+    write_codex_session(tmp_path / "codex")
+
+    settings = Settings(
+        save_texts="all",
+        claude_root=tmp_path / "claude",
+        codex_root=tmp_path / "codex",
+    )
+    job = run_import(store, make_detector(), settings=settings)
+    assert job.state == "done"
+    assert (job.found, job.imported) == (2, 2)
+
+
 def test_run_import_is_idempotent(tmp_path: Path, store: AuditStore) -> None:
     write_claude_session(tmp_path / "claude")
 
