@@ -80,6 +80,13 @@ export function ImportHistory() {
 
   const running = status?.state === "running";
 
+  // Sessions in the list that can be toggled (new, with a known id).
+  const selectableIds = (sessionList?.sessions ?? [])
+    .filter((s) => !s.imported && s.id)
+    .map((s) => s.id as string);
+  const allUnselected =
+    selectableIds.length > 0 && selectableIds.every((id) => excluded.has(id));
+
   // When a run finishes, refresh the preview split and the server-rendered
   // counts elsewhere on the page.
   const wasRunning = useRef(false);
@@ -312,6 +319,24 @@ export function ImportHistory() {
                   </tbody>
                 </table>
               </div>
+              {selectableIds.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    allUnselected
+                      ? setExcluded((prev) => {
+                          const next = new Set(prev);
+                          for (const id of selectableIds) next.delete(id);
+                          return next;
+                        })
+                      : setExcluded(new Set(selectableIds))
+                  }
+                  disabled={running}
+                  className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+                >
+                  {allUnselected ? "Select all" : "Unselect all"}
+                </button>
+              ) : null}
               {sessionList.total > sessionList.sessions.length ? (
                 <p className="text-xs text-muted-foreground">
                   Showing the {formatNumber(sessionList.sessions.length)} most recent of{" "}
@@ -320,19 +345,6 @@ export function ImportHistory() {
               ) : null}
             </>
           )
-        ) : null}
-        {excluded.size > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {formatNumber(excluded.size)} unchecked — skipped on import.{" "}
-            <button
-              type="button"
-              onClick={() => setExcluded(new Set())}
-              disabled={running}
-              className="underline hover:text-foreground"
-            >
-              Recheck all
-            </button>
-          </p>
         ) : null}
       </div>
 
