@@ -80,84 +80,119 @@ export function alignPii(original: string | null, anonymized: string): Aligned {
   return { parts, ok, hasOriginal: true };
 }
 
-// A single logical line of an aligned segment: the ordered parts that fall on
-// it, and whether any of them is a PII span.
-export interface AlignedLine {
+// One piece of a hunked segment. `text` is shown inline — its parts may include
+// PII spans and literals, and literals may span newlines. `gap` is a collapsed
+// PII-free stretch behind an expander; `lineShaped` records whether it starts
+// and ends on line boundaries (so the caller can label it "N lines hidden") vs.
+// a mid-line cut through a very long line/paragraph ("N characters hidden").
+export interface HunkText {
+  kind: "text";
   parts: PiiPart[];
-  hasPii: boolean;
+}
+export interface HunkGap {
+  kind: "gap";
+  parts: PiiPart[]; // the hidden content, revealed on expand
+  chars: number;
+  lines: number;
+  lineShaped: boolean;
+}
+export type HunkPiece = HunkText | HunkGap;
+
+// Characters of context kept on each side of a PII span; how far past a boundary
+// we look for a newline to snap to; and the smallest stretch worth collapsing.
+const HUNK_CONTEXT = 120;
+const HUNK_SNAP = 200;
+const HUNK_MIN_GAP = 80;
+
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  return n;
 }
 
-// A run of consecutive lines. `lines` blocks are shown; `gap` blocks are the
-// PII-free stretches collapsed behind a "N lines hidden" expander (their lines
-// are retained so expanding can reveal them in place).
-export type HunkBlock =
-  | { kind: "lines"; lines: AlignedLine[] }
-  | { kind: "gap"; count: number; lines: AlignedLine[] };
+// Collapse the PII-free stretches of an aligned segment, keeping ~HUNK_CONTEXT
+// chars of context around each detected PII span. Collapse boundaries snap to a
+// nearby newline when there is one, so content with many short lines collapses
+// on line boundaries (git-diff style, "N lines hidden") while a single very long
+// line/paragraph collapses mid-line ("N characters hidden") — the case pure
+// line-based hunking cannot handle. Each literal in `aligned.parts` is already
+// the maximal run between two PII anchors (or the segment start/end), so we can
+// decide the cut per literal.
+export function hunkify(aligned: Aligned): {
+  pieces: HunkPiece[];
+  piiCount: number;
+  lineCount: number;
+} {
+  const parts = aligned.parts;
+  const piiCount = parts.reduce((n, p) => n + (p.kind === "pii" ? 1 : 0), 0);
+  const lineCount =
+    parts.reduce((n, p) => n + (p.kind === "lit" ? countNewlines(p.text) : 0), 0) + 1;
 
-// Split an aligned segment into per-line blocks so a caller can show only the
-// neighborhoods around detected PII (git-diff style) and collapse the rest.
-// `context` is how many PII-free lines to keep on each side of a PII line.
-export function hunkify(
-  aligned: Aligned,
-  context = 2,
-): { blocks: HunkBlock[]; piiCount: number; lineCount: number } {
-  // Walk the parts, splitting literal chunks on newlines into lines. A PII span
-  // is attached to the line it starts on (spans never contain a newline).
-  const lines: AlignedLine[] = [];
-  let current: PiiPart[] = [];
-  let currentPii = false;
+  const pieces: HunkPiece[] = [];
+  let buffer: PiiPart[] = [];
   const flush = () => {
-    lines.push({ parts: current, hasPii: currentPii });
-    current = [];
-    currentPii = false;
-  };
-  for (const part of aligned.parts) {
-    if (part.kind === "lit") {
-      const pieces = part.text.split("\n");
-      pieces.forEach((piece, i) => {
-        if (i > 0) flush();
-        if (piece.length > 0) current.push({ kind: "lit", text: piece });
-      });
-    } else {
-      current.push(part);
-      currentPii = true;
+    if (buffer.length) {
+      pieces.push({ kind: "text", parts: buffer });
+      buffer = [];
     }
+  };
+
+  let piiSeen = 0;
+  for (const part of parts) {
+    if (part.kind === "pii") {
+      buffer.push(part);
+      piiSeen += 1;
+      continue;
+    }
+    const L = part.text;
+    // No PII on the left (segment start / no PII yet) means no left context to
+    // keep — the gap can start at this literal's start; likewise on the right.
+    const keepLeft = piiSeen > 0 ? HUNK_CONTEXT : 0;
+    const keepRight = piiCount - piiSeen > 0 ? HUNK_CONTEXT : 0;
+    if (L.length <= keepLeft + keepRight + HUNK_MIN_GAP) {
+      buffer.push(part);
+      continue;
+    }
+
+    // Head: keep `keepLeft` chars after the previous PII, extended to the next
+    // newline when one is within HUNK_SNAP so short lines stay whole.
+    let head = keepLeft;
+    let headSnapped = keepLeft === 0;
+    const nlAfter = L.indexOf("\n", keepLeft);
+    if (nlAfter !== -1 && nlAfter < keepLeft + HUNK_SNAP) {
+      head = nlAfter + 1;
+      headSnapped = true;
+    }
+    // Tail: keep `keepRight` chars before the next PII, retracted to a preceding
+    // newline when one is within HUNK_SNAP.
+    let tail = L.length - keepRight;
+    let tailSnapped = keepRight === 0;
+    const nlBefore = L.lastIndexOf("\n", tail - 1);
+    if (nlBefore !== -1 && nlBefore >= tail - HUNK_SNAP) {
+      tail = nlBefore + 1;
+      tailSnapped = true;
+    }
+    if (tail - head < HUNK_MIN_GAP) {
+      buffer.push(part);
+      continue;
+    }
+
+    if (head > 0) buffer.push({ kind: "lit", text: L.slice(0, head) });
+    flush();
+    const gapText = L.slice(head, tail);
+    pieces.push({
+      kind: "gap",
+      parts: [{ kind: "lit", text: gapText }],
+      chars: gapText.length,
+      lines: countNewlines(gapText),
+      lineShaped: headSnapped && tailSnapped,
+    });
+    const rest = L.slice(tail);
+    if (rest.length) buffer.push({ kind: "lit", text: rest });
   }
   flush();
 
-  const piiCount = aligned.parts.filter((p) => p.kind === "pii").length;
-
-  // No PII at all: one gap covering everything, so the caller can render a
-  // single collapsed "no PII" strip.
-  if (piiCount === 0) {
-    return {
-      blocks: [{ kind: "gap", count: lines.length, lines }],
-      piiCount,
-      lineCount: lines.length,
-    };
-  }
-
-  // Mark lines within `context` of any PII line as visible.
-  const visible = new Array<boolean>(lines.length).fill(false);
-  lines.forEach((line, i) => {
-    if (!line.hasPii) return;
-    for (let j = Math.max(0, i - context); j <= Math.min(lines.length - 1, i + context); j++) {
-      visible[j] = true;
-    }
-  });
-
-  // Coalesce consecutive lines of the same visibility into blocks.
-  const blocks: HunkBlock[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const vis = visible[i];
-    let j = i;
-    while (j < lines.length && visible[j] === vis) j++;
-    const run = lines.slice(i, j);
-    blocks.push(vis ? { kind: "lines", lines: run } : { kind: "gap", count: run.length, lines: run });
-    i = j;
-  }
-  return { blocks, piiCount, lineCount: lines.length };
+  return { pieces, piiCount, lineCount };
 }
 
 // Distinct masked values per entity type across several aligned segments, keyed
