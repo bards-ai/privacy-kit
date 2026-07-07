@@ -245,6 +245,98 @@ def setup(
     typer.echo(_setup_text(tool, base))
 
 
+_RESTART_TOOLS_HELP = f"Tools to check: {', '.join(_SETUP_TOOLS)} (default: all three)."
+
+
+def _restart_banner(title: str, *lines: str) -> None:
+    """A hard-to-miss warning block: the whole point is that the user sees it."""
+    rule = "─" * 74
+    typer.secho(rule, fg=typer.colors.YELLOW, bold=True)
+    typer.secho(f"  ⚠  {title}", fg=typer.colors.YELLOW, bold=True)
+    for line in lines:
+        typer.secho(f"     {line}", fg=typer.colors.YELLOW)
+    typer.secho(rule, fg=typer.colors.YELLOW, bold=True)
+
+
+@app.command()
+def restart_clients(
+    tools: list[str] = typer.Argument(None, help=_RESTART_TOOLS_HELP),
+) -> None:
+    """Warn about — and for Cursor, offer to restart — clients still on the old config."""
+    from privacy_kit.gateway import clients
+
+    selected = tuple(tools) if tools else _SETUP_TOOLS
+    unknown = [t for t in selected if t not in _SETUP_TOOLS]
+    if unknown:
+        typer.secho(
+            f"Unknown tool(s): {', '.join(unknown)}. Choose from: {', '.join(_SETUP_TOOLS)}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    if sys.platform.startswith("win"):
+        typer.echo(
+            "Restart detection isn't supported on Windows; restart your AI tools "
+            "manually to pick up the change."
+        )
+        return
+
+    procs = clients.list_processes()
+    any_running = False
+    for tool in selected:
+        matches = clients.detect(tool, procs)
+        if not matches:
+            continue
+        any_running = True
+        count = len(matches)
+        if tool == "claude-code":
+            _restart_banner(
+                f"RESTART NEEDED — {count} running Claude Code session(s) still use "
+                "the OLD configuration",
+                "Their traffic does NOT go through the new setup until restarted.",
+                "Exit each session and start it again — `claude --continue` resumes "
+                "your last conversation.",
+            )
+        elif tool == "codex":
+            _restart_banner(
+                f"RESTART NEEDED — {count} running Codex session(s) still use "
+                "the OLD configuration",
+                "Their traffic does NOT go through the new setup until restarted.",
+                "Exit each session and start `codex` again.",
+            )
+        else:
+            _restart_banner(
+                "RESTART NEEDED — Cursor is running with the OLD configuration",
+                "Cursor and its extensions keep running without the new hooks "
+                "until Cursor is restarted.",
+            )
+            if not clients.stdin_is_interactive():
+                typer.echo(
+                    "Not an interactive terminal; skipping the restart prompt. "
+                    "Restart Cursor manually."
+                )
+                continue
+            if not typer.confirm("Restart Cursor now?", default=False):
+                typer.echo("Leaving Cursor running; restart it later to load the new hooks.")
+                continue
+            relaunch = clients.cursor_relaunch_argv(matches)
+            survivors = clients.terminate([p.pid for p in matches])
+            if survivors:
+                typer.secho(
+                    f"Could not stop Cursor process(es): {', '.join(map(str, survivors))}. "
+                    "Restart Cursor manually.",
+                    fg=typer.colors.RED,
+                )
+                continue
+            if relaunch is None:
+                typer.echo("Cursor was closed; reopen it manually to load the new hooks.")
+            else:
+                clients.relaunch_detached(relaunch)
+                typer.secho("Restarted Cursor.", fg=typer.colors.GREEN)
+    if not any_running:
+        typer.echo("No running clients detected; new sessions pick up the configuration.")
+
+
 def _setup_text(tool: str, base: str) -> str:
     otel = (
         "# Optional: route telemetry logs through the gateway too\n"

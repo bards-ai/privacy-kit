@@ -29,7 +29,7 @@ make run   # dashboard → http://127.0.0.1:3000, gateway → :8787
 ```
 
 
-Open **http://127.0.0.1:3000**. Start a **new** tool session after routing. For Cursor, also set the chat panel base URL in Settings → Models (`privacy-kit setup cursor` prints the value). Undo with `make route-remove` or `privacy-kit setup … --remove`.
+Open **http://127.0.0.1:3000**. Routing only affects **new** sessions — `make route` warns about any Claude Code/Codex sessions that are still running on the old configuration (restart them yourself; `claude --continue` resumes) and offers to restart Cursor for you. For Cursor, also set the chat panel base URL in Settings → Models (`privacy-kit setup cursor` prints the value). Undo with `make route-remove` or `privacy-kit setup … --remove`.
 
 ### How it works
 
@@ -89,6 +89,13 @@ privacy-kit setup cursor --apply --scope project  # ...in .cursor/hooks.json ins
 ```
 
 `make route` / `make route-remove` apply or undo all three at once.
+
+#### Restarting clients after (un)routing
+
+Config changes only apply to **new** sessions — anything already running keeps talking with the old configuration (i.e. straight past the gateway). Every `make route*` target therefore ends with a restart check (`privacy-kit restart-clients`):
+
+- **Claude Code / Codex** — running sessions are never killed; a warning banner lists how many are still on the old config. Exit and start them again (`claude --continue` resumes your last conversation).
+- **Cursor** — hooks load only on editor start, so you're asked `Restart Cursor now? [y/N]`. Answering `y` closes Cursor cleanly and reopens it; answering `n` (or running non-interactively, e.g. CI) leaves it untouched and just prints the warning — restart it yourself later.
 
 ### Dashboard
 

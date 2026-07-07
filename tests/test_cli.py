@@ -107,6 +107,119 @@ def test_report_shows_recorded_entities(tmp_path: Path) -> None:
     assert "claude-code" in result.stdout
 
 
+def _no_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    from privacy_kit.gateway import clients
+
+    monkeypatch.setattr(clients, "list_processes", lambda: [])
+
+
+def _running(monkeypatch: pytest.MonkeyPatch, by_tool: dict[str, int]) -> list[str]:
+    """Fake detection: `by_tool` maps tool name -> fake pid. Returns the call log."""
+    from privacy_kit.gateway import clients
+
+    calls: list[str] = []
+
+    def fake_detect(tool: str, procs: object) -> list[clients.ClientProcess]:
+        calls.append(tool)
+        if tool in by_tool:
+            return [clients.ClientProcess(pid=by_tool[tool], exe=tool, args=tool)]
+        return []
+
+    monkeypatch.setattr(clients, "list_processes", lambda: [])
+    monkeypatch.setattr(clients, "detect", fake_detect)
+    return calls
+
+
+def _forbid_terminate(monkeypatch: pytest.MonkeyPatch) -> None:
+    from privacy_kit.gateway import clients
+
+    def boom(pids: list[int], grace: float = 8.0) -> list[int]:
+        raise AssertionError("terminate must not be called")
+
+    monkeypatch.setattr(clients, "terminate", boom)
+
+
+def test_restart_clients_nothing_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_clients(monkeypatch)
+    result = runner.invoke(app, ["restart-clients"])
+    assert result.exit_code == 0
+    assert "No running clients detected" in result.stdout
+
+
+def test_restart_clients_unknown_tool_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_clients(monkeypatch)
+    result = runner.invoke(app, ["restart-clients", "vim"])
+    assert result.exit_code == 1
+
+
+def test_restart_clients_defaults_to_all_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _running(monkeypatch, {})
+    result = runner.invoke(app, ["restart-clients"])
+    assert result.exit_code == 0
+    assert calls == ["claude-code", "codex", "cursor"]
+
+
+def test_restart_clients_warns_only_for_claude_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    _running(monkeypatch, {"claude-code": 111})
+    _forbid_terminate(monkeypatch)
+    result = runner.invoke(app, ["restart-clients", "claude-code"])
+    assert result.exit_code == 0
+    assert "claude --continue" in result.stdout
+
+
+def test_restart_clients_cursor_non_interactive_skips_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from privacy_kit.gateway import clients
+
+    _running(monkeypatch, {"cursor": 222})
+    _forbid_terminate(monkeypatch)
+    monkeypatch.setattr(clients, "stdin_is_interactive", lambda: False)
+    result = runner.invoke(app, ["restart-clients", "cursor"])
+    assert result.exit_code == 0
+    assert "extensions" in result.stdout
+    assert "Restart Cursor now?" not in result.stdout
+    assert "Restart Cursor manually" in result.stdout
+
+
+def test_restart_clients_cursor_answer_no_leaves_it_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from privacy_kit.gateway import clients
+
+    _running(monkeypatch, {"cursor": 222})
+    _forbid_terminate(monkeypatch)
+    monkeypatch.setattr(clients, "stdin_is_interactive", lambda: True)
+    result = runner.invoke(app, ["restart-clients", "cursor"], input="n\n")
+    assert result.exit_code == 0
+    assert "Restart Cursor now?" in result.stdout
+    assert "Leaving Cursor running" in result.stdout
+
+
+def test_restart_clients_cursor_answer_yes_kills_and_relaunches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from privacy_kit.gateway import clients
+
+    _running(monkeypatch, {"cursor": 222})
+    monkeypatch.setattr(clients, "stdin_is_interactive", lambda: True)
+    killed: list[list[int]] = []
+    launched: list[list[str]] = []
+
+    def fake_terminate(pids: list[int], grace: float = 8.0) -> list[int]:
+        killed.append(pids)
+        return []
+
+    monkeypatch.setattr(clients, "terminate", fake_terminate)
+    monkeypatch.setattr(clients, "cursor_relaunch_argv", lambda procs: ["/usr/bin/cursor"])
+    monkeypatch.setattr(clients, "relaunch_detached", lambda argv: launched.append(argv))
+    result = runner.invoke(app, ["restart-clients", "cursor"], input="y\n")
+    assert result.exit_code == 0
+    assert killed == [[222]]
+    assert launched == [["/usr/bin/cursor"]]
+    assert "Restarted Cursor" in result.stdout
+
+
 @requires_model
 def test_scan_with_real_model(tmp_path: Path) -> None:
     sample = tmp_path / "note.txt"
