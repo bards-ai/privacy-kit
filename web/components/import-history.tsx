@@ -181,7 +181,7 @@ export function ImportHistory() {
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          To (defaults to now)
+          To
           <input
             type="date"
             value={until}
