@@ -39,3 +39,11 @@
   We deliberately do NOT wrap `redact_text` via `langsmith.anonymizer.create_anonymizer`
   because that calls per-string and would drop path filtering. LangSmith applies
   the anonymizer to inputs/outputs and a `{"error": ...}`-wrapped error string.
+
+- LangSmith EU accounts: SDK defaults to the US endpoint (`api.smith.langchain.com`) and EU keys get bare 403 Forbidden on every call. Fix: `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`. Worth mentioning in README/troubleshooting for the LangSmith integration.
+- `load_allow_file` (in `core/redactor.py`) is the file-based allowlist loader:
+  one entry per line, `#` comments, `re:` prefix for regex patterns, everything
+  else a literal term. `allow_file`/`PII_ALLOW_FILE` on `make_mask`/`make_anonymizer`
+  MERGE with explicit `allow_terms`/`allow_patterns` (explicit args first, file
+  entries appended) rather than overriding them — same "kwarg wins over env,
+  but file is additive" shape worth keeping consistent if this pattern grows.

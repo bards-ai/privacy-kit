@@ -325,6 +325,32 @@ export PII_ALLOW_TERMS="Acme Corp,support@acme.com"
 export PII_ALLOW_PATTERNS="ACME-\d{4}"
 ```
 
+For a longer allowlist, keep it in a file instead of an env var. Pass
+`allow_file` (or set `PII_ALLOW_FILE`) with a path to a UTF-8 text file, one
+entry per line: blank lines and lines starting with `#` are ignored, and
+lines starting with `re:` are regex patterns (matched with `re.fullmatch`,
+same as `allow_patterns`); everything else is a literal term.
+
+```
+# company names
+Acme Corp
+support@acme.com
+
+# internal ID formats
+re: ACME-\d{4}
+```
+
+```python
+make_mask(allow_file="allowlist.txt")
+```
+
+```bash
+export PII_ALLOW_FILE="allowlist.txt"
+```
+
+If both `allow_file` and `allow_terms`/`allow_patterns` are given, they are
+merged — the explicit arguments first, then the file's entries.
+
 ## Configuration
 
 Everything reads the same `PII_*` environment variables:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
@@ -133,6 +134,28 @@ class Redactor:
         if self.exclude_paths is None:
             return False
         return any(_path_matches(pattern, path) for pattern in self.exclude_paths)
+
+
+def load_allow_file(path: str | os.PathLike[str]) -> tuple[list[str], list[str]]:
+    """Load allowlist terms and regex patterns from a text file.
+
+    One entry per line. Blank lines and lines starting with ``#`` are
+    ignored. Lines starting with ``re:`` are treated as regex patterns
+    (the rest of the line, stripped, is the pattern); everything else is
+    a literal term.
+    """
+    terms: list[str] = []
+    patterns: list[str] = []
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("re:"):
+                patterns.append(line[len("re:") :].strip())
+            else:
+                terms.append(line)
+    return terms, patterns
 
 
 def _is_boundary_punctuation(character: str) -> bool:

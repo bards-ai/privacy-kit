@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -78,6 +79,29 @@ def test_make_anonymizer_reads_allow_patterns_env(monkeypatch: pytest.MonkeyPatc
     anonymizer = make_anonymizer()
 
     assert anonymizer("ID 85010112345") == "ID 85010112345"
+
+
+def test_make_anonymizer_reads_allow_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_detector(monkeypatch)
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text("# companies\nAcme Corp\nre: \\d{11}\n", encoding="utf-8")
+
+    anonymizer = make_anonymizer(allow_file=str(allow_file))
+
+    assert anonymizer("Acme Corp, PESEL 85010112345") == "Acme Corp, PESEL 85010112345"
+
+
+def test_make_anonymizer_reads_allow_file_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_detector(monkeypatch)
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text("Acme Corp\n", encoding="utf-8")
+    monkeypatch.setenv("PII_ALLOW_FILE", str(allow_file))
+
+    anonymizer = make_anonymizer()
+
+    assert anonymizer("From Acme Corp") == "From Acme Corp"
 
 
 def test_make_client_passes_anonymizer_and_hide_metadata(

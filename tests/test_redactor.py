@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from privacy_kit.core.redactor import Redactor
+from privacy_kit.core.redactor import Redactor, load_allow_file
 from privacy_kit.core.types import Span
 
 
@@ -244,3 +246,32 @@ def test_keeps_boundary_punctuation_outside_expanded_mask() -> None:
     result = redactor.redact_text(text)
 
     assert result == 'Kontakt: "[REDACTED]", potem ([REDACTED])!'
+
+
+def test_load_allow_file_parses_terms_patterns_comments_and_blanks(tmp_path: Path) -> None:
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text(
+        "\n".join(
+            [
+                "# company names",
+                "Acme Corp",
+                "",
+                "  support@acme.com  ",
+                "# id patterns",
+                "re: \\d{11}",
+                "re:ACME-\\d{4}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    terms, patterns = load_allow_file(allow_file)
+
+    assert terms == ["Acme Corp", "support@acme.com"]
+    assert patterns == [r"\d{11}", r"ACME-\d{4}"]
+
+
+def test_load_allow_file_missing_raises_file_not_found_error(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_allow_file(tmp_path / "missing.txt")

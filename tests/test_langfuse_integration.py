@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from privacy_kit.core.types import Span
@@ -71,3 +73,24 @@ def test_make_mask_can_limit_and_exclude_paths(monkeypatch: pytest.MonkeyPatch) 
             "support_contact": "jan.kowalski@example.com",
         },
     }
+
+
+def test_make_mask_reads_allow_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_detector(monkeypatch)
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text("# companies\nAcme Corp\nre: \\d{11}\n", encoding="utf-8")
+
+    mask = make_mask(allow_file=str(allow_file))
+
+    assert mask("Acme Corp, PESEL 85010112345") == "Acme Corp, PESEL 85010112345"
+
+
+def test_make_mask_reads_allow_file_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_detector(monkeypatch)
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text("Acme Corp\n", encoding="utf-8")
+    monkeypatch.setenv("PII_ALLOW_FILE", str(allow_file))
+
+    mask = make_mask()
+
+    assert mask("From Acme Corp") == "From Acme Corp"

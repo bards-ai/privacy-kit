@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from privacy_kit.core.detectors import build_detector
-from privacy_kit.core.redactor import Redactor
+from privacy_kit.core.redactor import Redactor, load_allow_file
 
 
 def make_mask(
@@ -17,6 +17,7 @@ def make_mask(
     exclude_paths: list[str] | None = None,
     allow_terms: list[str] | None = None,
     allow_patterns: list[str] | None = None,
+    allow_file: str | None = None,
 ) -> Callable[[Any], Any]:
     """Return a Langfuse-compatible mask(data, **kwargs) function."""
 
@@ -32,6 +33,11 @@ def make_mask(
     resolved_exclude_paths = exclude_paths or _paths_from_env("PII_EXCLUDE_PATHS")
     resolved_allow_terms = allow_terms or _paths_from_env("PII_ALLOW_TERMS")
     resolved_allow_patterns = allow_patterns or _paths_from_env("PII_ALLOW_PATTERNS")
+    resolved_allow_file = allow_file if allow_file is not None else os.getenv("PII_ALLOW_FILE")
+    if resolved_allow_file:
+        file_terms, file_patterns = load_allow_file(resolved_allow_file)
+        resolved_allow_terms = [*(resolved_allow_terms or []), *file_terms]
+        resolved_allow_patterns = [*(resolved_allow_patterns or []), *file_patterns]
     redactor = Redactor(
         detector=build_detector(backend=resolved_backend, threshold=resolved_threshold),
         include_labels=resolved_include_labels,
