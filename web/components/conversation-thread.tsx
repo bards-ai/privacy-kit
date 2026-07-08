@@ -35,23 +35,30 @@ function SegmentGroup({
   heading,
   segments,
   plain,
+  variant,
 }: {
   heading: ReactNode;
   segments: TextSegment[];
   plain?: boolean;
+  variant?: "full" | "diff";
 }) {
   if (segments.length === 0) return null;
   return (
     <div className="space-y-2">
       {heading}
-      {plain ? <TextSegmentsPlain texts={segments} /> : <TextSegmentsBeforeAfter texts={segments} />}
+      {plain ? (
+        <TextSegmentsPlain texts={segments} />
+      ) : (
+        <TextSegmentsBeforeAfter texts={segments} variant={variant} />
+      )}
     </div>
   );
 }
 
-// Full raw view of one API call: metadata header, the saved prompt (user/tool)
+// Raw view of one API call: metadata header, the saved prompt (user/tool)
 // text, then the agent's response, and a link to the raw per-turn view. Used
-// inside the expanded steps of an exchange.
+// inside the expanded steps of an exchange; the caller may pass a turn whose
+// texts were pre-filtered to omit segments already exposed elsewhere.
 function TurnCard({ turn, conversationId }: { turn: ConversationTurn; conversationId: string }) {
   const it = turn.interaction;
   const prompt = turn.texts.filter((t) => t.category !== "assistant");
@@ -88,6 +95,7 @@ function TurnCard({ turn, conversationId }: { turn: ConversationTurn; conversati
                 </span>
               }
               segments={prompt}
+              variant="diff"
             />
             <SegmentGroup
               heading={<CategoryBadge category="assistant" />}
@@ -102,7 +110,13 @@ function TurnCard({ turn, conversationId }: { turn: ConversationTurn; conversati
 }
 
 // The message the human typed to open an exchange.
-function UserMessageCard({ turn }: { turn: ConversationTurn }) {
+function UserMessageCard({
+  turn,
+  conversationId,
+}: {
+  turn: ConversationTurn;
+  conversationId: string;
+}) {
   const it = turn.interaction;
   const segments = turn.texts.filter((t) => t.category === "user");
   return (
@@ -112,6 +126,14 @@ function UserMessageCard({ turn }: { turn: ConversationTurn }) {
           <CategoryBadge category="user" />
           <span className="font-medium">{it.source}</span>
           <span className="text-muted-foreground">· {formatDateTime(it.created_at)}</span>
+          <div className="ml-auto">
+            <Link
+              href={`/conversations/${encodeURIComponent(conversationId)}/interactions/${it.id}`}
+              className="text-primary hover:underline"
+            >
+              View
+            </Link>
+          </div>
         </div>
         <TextSegmentsBeforeAfter texts={segments} />
       </CardContent>
@@ -163,7 +185,8 @@ function FinalResponseCard({
 
 // Everything between the user message and the final response — the agentic
 // loop (tool results, intermediate model text) plus background side-channel
-// calls — folded into one collapsible strip. Expanding shows every raw call.
+// calls — folded into one collapsible strip. Expanding shows each raw call,
+// minus the segments already exposed by the surrounding cards.
 function ExchangeSteps({
   turns,
   conversationId,
@@ -257,18 +280,27 @@ function ExchangeBlock({
   const finalTurn =
     lastMain ??
     [...turns].reverse().find((t) => t.texts.some((x) => x.category === "assistant"));
-  // Show the collapsed middle when there is anything beyond the two exposed
-  // cards: extra calls, tool data riding along on the opening call, or a
-  // background-only run where neither exposed card would render at all.
-  const hasMiddle =
-    turns.length > 1 ||
-    first.texts.some((t) => t.category === "tool") ||
-    (!hasUserText && !finalTurn);
+  // The collapsed strip holds only what the two exposed cards don't already
+  // show: strip the first turn's user text and the final turn's assistant
+  // text, and drop a turn entirely once stripping leaves nothing (turns that
+  // never had texts pass through and keep their "No text saved" card).
+  const stepTurns = turns.flatMap((t) => {
+    const hideUser = hasUserText && t === first;
+    const hideAssistant = t === finalTurn;
+    if (!hideUser && !hideAssistant) return [t];
+    const texts = t.texts.filter(
+      (x) =>
+        !(hideUser && x.category === "user") &&
+        !(hideAssistant && x.category === "assistant"),
+    );
+    return texts.length > 0 ? [{ ...t, texts }] : [];
+  });
+  const hasMiddle = stepTurns.length > 0;
 
   return (
     <div className="space-y-3">
-      {hasUserText ? <UserMessageCard turn={first} /> : null}
-      {hasMiddle ? <ExchangeSteps turns={turns} conversationId={conversationId} /> : null}
+      {hasUserText ? <UserMessageCard turn={first} conversationId={conversationId} /> : null}
+      {hasMiddle ? <ExchangeSteps turns={stepTurns} conversationId={conversationId} /> : null}
       {finalTurn ? <FinalResponseCard turn={finalTurn} conversationId={conversationId} /> : null}
     </div>
   );
