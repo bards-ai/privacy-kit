@@ -179,8 +179,8 @@ def _is_quota_probe(wire: str, body: dict[str, Any]) -> bool:
 
 def classify_kind(wire: str, body: dict[str, Any]) -> str:
     """Bucket a request as ``"main"``, ``"safety"``, or ``"helper"``."""
-    # if _is_quota_probe(wire, body):
-    #     return HELPER
+    if _is_quota_probe(wire, body):
+        return HELPER
     text = _collect_text(wire, body)
     if not text:
         return MAIN

@@ -16,7 +16,7 @@ from privacy_kit.gateway.store import AuditStore
 # --- conversation_key -------------------------------------------------------
 
 
-def test_conversation_key_stable_across_turns_anthropic() -> None:
+def test_conversation_key_stable_across_turns_openai_chat() -> None:
     """Same opening user message → same key even as history grows each turn."""
     turn1 = {"messages": [{"role": "user", "content": "Hello there"}]}
     turn2 = {
@@ -26,15 +26,15 @@ def test_conversation_key_stable_across_turns_anthropic() -> None:
             {"role": "user", "content": "A follow-up"},
         ]
     }
-    k1 = conversation_key("anthropic", turn1)
-    k2 = conversation_key("anthropic", turn2)
+    k1 = conversation_key("openai_chat", turn1)
+    k2 = conversation_key("openai_chat", turn2)
     assert k1 is not None
     assert k1 == k2
 
 
 def test_conversation_key_differs_for_different_openings() -> None:
-    a = conversation_key("anthropic", {"messages": [{"role": "user", "content": "topic A"}]})
-    b = conversation_key("anthropic", {"messages": [{"role": "user", "content": "topic B"}]})
+    a = conversation_key("openai_chat", {"messages": [{"role": "user", "content": "topic A"}]})
+    b = conversation_key("openai_chat", {"messages": [{"role": "user", "content": "topic B"}]})
     assert a != b
 
 
@@ -45,8 +45,8 @@ def test_conversation_key_reads_first_text_block() -> None:
             {"role": "user", "content": [{"type": "text", "text": "block hello"}]},
         ]
     }
-    assert conversation_key("anthropic", body) == conversation_key(
-        "anthropic", {"messages": [{"role": "user", "content": "block hello"}]}
+    assert conversation_key("openai_chat", body) == conversation_key(
+        "openai_chat", {"messages": [{"role": "user", "content": "block hello"}]}
     )
 
 
@@ -93,35 +93,35 @@ def test_conversation_key_anthropic_legacy_session_id_format() -> None:
     assert conversation_key("anthropic", body) == "123e4567-e89b-12d3-a456-426614174000"
 
 
-def test_conversation_key_anthropic_ignores_plain_user_id() -> None:
-    """metadata.user_id without session semantics is a stable per-user id (the
-    documented API meaning); using it would merge all of a user's conversations,
-    so fall back to the first-message hash instead."""
+def test_conversation_key_anthropic_none_without_session_id() -> None:
+    """The anthropic wire never falls back to first-message hashing: a shared
+    opening prompt (or /clear's near-constant injected preamble) would merge
+    unrelated conversations, and ungrouped beats wrongly grouped. A stable
+    per-user metadata.user_id (the documented API meaning) must not be used
+    either — it would merge all of a user's conversations."""
     bare = {"messages": [{"role": "user", "content": "hi"}]}
     plain = {"metadata": {"user_id": "customer-42"}, **bare}
     no_session = {"metadata": {"user_id": json.dumps({"device_id": "d1"})}, **bare}
-    assert conversation_key("anthropic", plain) == conversation_key("anthropic", bare)
-    assert conversation_key("anthropic", no_session) == conversation_key("anthropic", bare)
+    assert conversation_key("anthropic", bare) is None
+    assert conversation_key("anthropic", plain) is None
+    assert conversation_key("anthropic", no_session) is None
 
 
 def test_conversation_key_fallback_skips_injected_blocks() -> None:
-    """Without a session id, the hash fallback must key on the first *typed*
-    text: a /clear'd session opens with harness-injected command wrappers and
-    system reminders, which are near-constant and would otherwise collapse
-    every such session into one conversation."""
-    def clear_body(prompt: str) -> dict:
+    """The OpenAI hash fallback must key on the first *typed* text: a session
+    that opens with harness-injected wrappers (near-constant per project)
+    would otherwise collapse every such session into one conversation."""
+    def injected_body(prompt: str) -> dict:
         return {
             "messages": [
                 {
                     "role": "user",
-                    "content": "<command-name>/clear</command-name>\n"
-                    "<command-message>clear</command-message>\n"
-                    "<command-args></command-args>",
+                    "content": "<user_instructions>project instructions</user_instructions>",
                 },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "<system-reminder>\ninjected context\n</system-reminder>"},
+                        {"type": "text", "text": "<environment_context>cwd, sandbox</environment_context>"},
                         {"type": "text", "text": prompt},
                     ],
                 },
@@ -129,11 +129,11 @@ def test_conversation_key_fallback_skips_injected_blocks() -> None:
         }
 
     typed_only = {"messages": [{"role": "user", "content": "fix the bug"}]}
-    assert conversation_key("anthropic", clear_body("fix the bug")) == conversation_key(
-        "anthropic", typed_only
+    assert conversation_key("openai_chat", injected_body("fix the bug")) == conversation_key(
+        "openai_chat", typed_only
     )
-    assert conversation_key("anthropic", clear_body("topic A")) != conversation_key(
-        "anthropic", clear_body("topic B")
+    assert conversation_key("openai_chat", injected_body("topic A")) != conversation_key(
+        "openai_chat", injected_body("topic B")
     )
 
 
