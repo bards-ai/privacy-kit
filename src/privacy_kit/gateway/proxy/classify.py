@@ -8,7 +8,8 @@ source, and auth, so only the *content* tells them apart. We bucket each request
 into one of three kinds from stable markers in its system/user text:
 
 * ``"safety"``  — the tool/command permission classifier.
-* ``"helper"``  — title, topic-detection, and summarization side-channels.
+* ``"helper"``  — title, topic-detection, and summarization side-channels,
+  plus Claude Code's tiny usage-limit probes (see ``_is_quota_probe``).
 * ``"main"``    — everything else: the actual agent conversation (the default).
 
 The markers are matched case-insensitively as substrings and are deliberately
@@ -152,8 +153,34 @@ def _collect_text(wire: str, body: dict[str, Any]) -> str:
     return " ".join(parts)[:_SCAN_CHARS].lower()
 
 
+def _is_quota_probe(wire: str, body: dict[str, Any]) -> bool:
+    """True for Claude Code's usage-limit probes.
+
+    Claude Code periodically checks whether the account has quota left by
+    sending a minimal request: a single user message whose whole text is
+    "quota" with ``max_tokens: 1`` (answered with ``#``). It is background
+    chatter, not a real turn. Matched narrowly — exact whole-message text
+    plus the tiny token cap — so a genuine prompt mentioning quota can
+    never trip it.
+    """
+    if wire != "anthropic":
+        return False
+    max_tokens = body.get("max_tokens")
+    if not isinstance(max_tokens, int) or not 1 <= max_tokens <= 2:
+        return False
+    messages = body.get("messages", [])
+    if len(messages) != 1 or not isinstance(messages[0], dict):
+        return False
+    content = messages[0].get("content")
+    if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict):
+        content = content[0].get("text")
+    return isinstance(content, str) and content.strip().lower() == "quota"
+
+
 def classify_kind(wire: str, body: dict[str, Any]) -> str:
     """Bucket a request as ``"main"``, ``"safety"``, or ``"helper"``."""
+    # if _is_quota_probe(wire, body):
+    #     return HELPER
     text = _collect_text(wire, body)
     if not text:
         return MAIN

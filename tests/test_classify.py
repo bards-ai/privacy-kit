@@ -145,3 +145,41 @@ def test_helper_session_wrapper_still_scanned() -> None:
     # deliberately NOT treated as context wrappers.
     body = {"messages": [{"role": "user", "content": "<session> ls -la </session>"}]}
     assert classify_kind("anthropic", body) == "helper"
+
+
+def test_quota_probe_is_helper() -> None:
+    # Claude Code's usage-limit probe: a lone "quota" message capped at 1 token.
+    body = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "quota"}],
+    }
+    as_block = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "quota"}]}],
+    }
+    assert classify_kind("anthropic", body) == "helper"
+    assert classify_kind("anthropic", as_block) == "helper"
+
+
+def test_quota_probe_match_is_narrow() -> None:
+    # A real prompt mentioning quota, a normal token budget, or a multi-turn
+    # history must never be mistaken for the probe.
+    mention = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "what is my quota?"}],
+    }
+    real_budget = {
+        "max_tokens": 32000,
+        "messages": [{"role": "user", "content": "quota"}],
+    }
+    multi_turn = {
+        "max_tokens": 1,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "quota"},
+        ],
+    }
+    assert classify_kind("anthropic", mention) == "main"
+    assert classify_kind("anthropic", real_budget) == "main"
+    assert classify_kind("anthropic", multi_turn) == "main"
