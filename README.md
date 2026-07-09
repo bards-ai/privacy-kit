@@ -93,6 +93,13 @@ privacy-kit setup cursor --apply --scope project  # ...in .cursor/hooks.json ins
 
 `make route` / `make route-remove` apply or undo all three at once.
 
+#### Restarting clients after (un)routing
+
+Config changes only apply to **new** sessions — anything already running keeps talking with the old configuration (i.e. straight past the gateway). Every `make route*` target therefore ends with a restart check (`privacy-kit restart-clients`):
+
+- **Claude Code / Codex** — running sessions are never killed; a warning banner lists how many are still on the old config. Exit and start them again (`claude --continue` resumes your last conversation).
+- **Cursor** — hooks load only on editor start, so you're asked `Restart Cursor now? [y/N]`. Answering `y` closes Cursor cleanly and reopens it; answering `n` (or running non-interactively, e.g. CI) leaves it untouched and just prints the warning — restart it yourself later.
+
 ### Dashboard
 
 While the gateway runs, the **web dashboard** — a self-contained JS web UI (`make run` or `make dev`, then `http://127.0.0.1:3000`) — shows the shared audit log for all three tools: overview charts, per-interaction before/after text, filter / sort / search, CSV/JSON export, delete/clear, and an in-memory live PII preview (never stored). No external assets, no CDN.

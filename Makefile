@@ -89,23 +89,29 @@ route: route-claude-code route-codex route-cursor ## Route Claude Code + Codex +
 
 route-claude-code: ## Route Claude Code through the gateway (edits ~/.claude/settings.json)
 	uv run privacy-kit setup claude-code --apply
+	uv run privacy-kit restart-clients claude-code
 
 route-codex: ## Route Codex through the gateway (edits ~/.codex/config.toml)
 	uv run privacy-kit setup codex --apply
+	uv run privacy-kit restart-clients codex
 
 route-cursor: ## Install Cursor hooks to audit Composer/agent (edits ~/.cursor/hooks.json)
 	uv run privacy-kit setup cursor --apply
+	uv run privacy-kit restart-clients cursor
 
 route-remove: route-claude-code-remove route-codex-remove route-cursor-remove ## Undo: stop routing tools through the gateway
 
 route-claude-code-remove: ## Undo the Claude Code routing
 	uv run privacy-kit setup claude-code --remove
+	uv run privacy-kit restart-clients claude-code
 
 route-codex-remove: ## Undo the Codex routing
 	uv run privacy-kit setup codex --remove
+	uv run privacy-kit restart-clients codex
 
 route-cursor-remove: ## Remove the Cursor hooks
 	uv run privacy-kit setup cursor --remove
+	uv run privacy-kit restart-clients cursor
 
 # --- Misc -------------------------------------------------------------------
 
