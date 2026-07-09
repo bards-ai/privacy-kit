@@ -296,6 +296,8 @@ def restart_clients(
                 "Their traffic does NOT go through the new setup until restarted.",
                 "Exit each session and start it again — `claude --continue` resumes "
                 "your last conversation.",
+                "If you use Claude Code inside Cursor or VS Code, reload that editor "
+                "so its extension picks up the change.",
             )
         elif tool == "codex":
             _restart_banner(
@@ -303,6 +305,8 @@ def restart_clients(
                 "the OLD configuration",
                 "Their traffic does NOT go through the new setup until restarted.",
                 "Exit each session and start `codex` again.",
+                "If you use Codex inside Cursor or VS Code, reload that editor "
+                "so its extension picks up the change.",
             )
         else:
             _restart_banner(
