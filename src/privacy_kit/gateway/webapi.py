@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import threading
 from datetime import datetime
 from typing import Any, get_args
 
@@ -30,6 +31,8 @@ from privacy_kit import __version__
 from privacy_kit.core.detectors import Detector
 from privacy_kit.core.vault import Vault, anonymize_into
 from privacy_kit.gateway.config import Settings, get_settings
+from privacy_kit.gateway.importer import runner as importer_runner
+from privacy_kit.gateway.importer.runner import ImportJob
 from privacy_kit.gateway.store import AuditStore
 from privacy_kit.gateway.store.models import Detection, Interaction, InteractionText
 
@@ -72,6 +75,25 @@ def _parse_dt(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _localize(dt: datetime) -> datetime:
+    """Naive datetimes are interpreted as local time, like the CLI's --since."""
+    return dt if dt.tzinfo else dt.astimezone()
+
+
+def _import_window(since: str | None, until: str | None) -> tuple[datetime | None, datetime | None]:
+    """Parse the import endpoints' since/until params; raises ``ValueError``
+    with the user-facing message on bad input."""
+    since_dt = _parse_dt(since)
+    if since and since_dt is None:
+        raise ValueError("since must be an ISO date or datetime (e.g. 2026-06-01)")
+    if since_dt is not None:
+        since_dt = _localize(since_dt)
+    until_dt = importer_runner.parse_until(until) if until else None
+    if until and until_dt is None:
+        raise ValueError("until must be an ISO date or datetime (e.g. 2026-06-01)")
+    return since_dt, until_dt
 
 
 def _interaction_dict(row: Interaction) -> dict[str, Any]:
@@ -232,6 +254,211 @@ def register_webapi_routes(
         for field, value in normalized.items():
             _apply_setting(field, value)
         return JSONResponse(_config_payload())
+
+    # --- History import (Claude Code / Codex transcripts → audit log) --------
+    # One job at a time; state lives in this closure. Detection runs in a
+    # daemon thread (onnxruntime releases the GIL), the UI polls /status.
+    import_state: dict[str, Any] = {"job": None, "thread": None}
+    import_lock = threading.Lock()
+
+    def _job_running() -> bool:
+        thread = import_state["thread"]
+        return thread is not None and thread.is_alive()
+
+    @app.get("/api/v1/import/preview")
+    async def api_import_preview(
+        since: str | None = None, until: str | None = None, project: str | None = None
+    ) -> JSONResponse:
+        """Discovered history sessions per source, split new vs already imported."""
+        try:
+            since_dt, until_dt = _import_window(since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        project_filter = project or None
+
+        def build() -> dict[str, Any]:
+            found = importer_runner.discover(
+                list(importer_runner.SOURCES),
+                since=since_dt,
+                until=until_dt,
+                project=project_filter,
+                claude_root=cfg.claude_root,
+                codex_root=cfg.codex_root,
+            )
+            ids = {(src, path): importer_runner.session_id_of(src, path) for src, path in found}
+            existing = store.existing_conversation_ids(
+                [sid for sid in ids.values() if sid is not None]
+            )
+            per_source: dict[str, dict[str, int]] = {
+                src: {"found": 0, "new": 0, "imported": 0} for src in importer_runner.SOURCES
+            }
+            for (src, _path), sid in ids.items():
+                stats = per_source[src]
+                stats["found"] += 1
+                if sid is not None and sid in existing:
+                    stats["imported"] += 1
+                else:
+                    stats["new"] += 1
+            return {"sources": per_source}
+
+        return JSONResponse(await run_in_threadpool(build))
+
+    @app.get("/api/v1/import/preview/sessions")
+    async def api_import_preview_sessions(
+        since: str | None = None,
+        until: str | None = None,
+        project: str | None = None,
+        sources: str | None = None,
+        limit: int = 200,
+    ) -> JSONResponse:
+        """Newest-first list of the sessions the filters would cover, capped at
+        ``limit``. Titles are the first human prompt of each session — raw user
+        text, so they are gated by ``expose_plaintext`` like every other
+        plaintext-returning endpoint (and never logged)."""
+        try:
+            since_dt, until_dt = _import_window(since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if sources:
+            wanted = [s for s in sources.split(",") if s]
+            if not wanted or any(s not in importer_runner.SOURCES for s in wanted):
+                return JSONResponse(
+                    {"error": f"sources must be a subset of {list(importer_runner.SOURCES)}"},
+                    status_code=400,
+                )
+        else:
+            wanted = list(importer_runner.SOURCES)
+        project_filter = project or None
+        cap = max(1, min(limit, 500))
+
+        def build() -> dict[str, Any]:
+            found = importer_runner.discover(
+                wanted,
+                since=since_dt,
+                until=until_dt,
+                project=project_filter,
+                claude_root=cfg.claude_root,
+                codex_root=cfg.codex_root,
+            )
+            found.sort(key=lambda item: item[1].stat().st_mtime, reverse=True)
+            page = [
+                (src, path, importer_runner.session_id_of(src, path)) for src, path in found[:cap]
+            ]
+            existing = store.existing_conversation_ids(
+                [sid for _src, _path, sid in page if sid is not None]
+            )
+            sessions: list[dict[str, Any]] = []
+            for src, path, sid in page:
+                if cfg.expose_plaintext:
+                    title, proj = importer_runner.session_preview(src, path)
+                else:
+                    # No file reads at all when plaintext is off; the Claude
+                    # project slug comes from the path, the Codex cwd doesn't.
+                    title = None
+                    proj = path.parent.name if src == "claude-code" else None
+                sessions.append(
+                    {
+                        "source": src,
+                        "id": sid,
+                        "title": title,
+                        "project": proj,
+                        "modified_at": datetime.fromtimestamp(path.stat().st_mtime)
+                        .astimezone()
+                        .isoformat(),
+                        "imported": sid is not None and sid in existing,
+                    }
+                )
+            return {
+                "total": len(found),
+                "titles_redacted": not cfg.expose_plaintext,
+                "sessions": sessions,
+            }
+
+        return JSONResponse(await run_in_threadpool(build))
+
+    @app.post("/api/v1/import")
+    async def api_import_start(request: Request) -> JSONResponse:
+        """Start a background import; 409 while one is already running."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        sources = body.get("sources") or list(importer_runner.SOURCES)
+        if not isinstance(sources, list) or any(s not in importer_runner.SOURCES for s in sources):
+            return JSONResponse(
+                {"error": f"sources must be a subset of {list(importer_runner.SOURCES)}"},
+                status_code=400,
+            )
+        since_raw = body.get("since")
+        if since_raw is not None and not isinstance(since_raw, str):
+            return JSONResponse({"error": "since must be a string"}, status_code=400)
+        since = _parse_dt(since_raw)
+        if since_raw and since is None:
+            return JSONResponse(
+                {"error": "since must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        if since is not None:
+            since = _localize(since)
+        until_raw = body.get("until")
+        if until_raw is not None and not isinstance(until_raw, str):
+            return JSONResponse({"error": "until must be a string"}, status_code=400)
+        until = importer_runner.parse_until(until_raw) if until_raw else None
+        if until_raw and until is None:
+            return JSONResponse(
+                {"error": "until must be an ISO date or datetime (e.g. 2026-06-01)"},
+                status_code=400,
+            )
+        project = body.get("project")
+        if project is not None and not isinstance(project, str):
+            return JSONResponse({"error": "project must be a string"}, status_code=400)
+        project = project or None
+        dry_run = body.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            return JSONResponse({"error": "dry_run must be a boolean"}, status_code=400)
+        exclude_raw = body.get("exclude_session_ids")
+        if exclude_raw is not None and (
+            not isinstance(exclude_raw, list) or any(not isinstance(x, str) for x in exclude_raw)
+        ):
+            return JSONResponse(
+                {"error": "exclude_session_ids must be a list of strings"}, status_code=400
+            )
+        exclude_session_ids = set(exclude_raw) if exclude_raw else None
+        with import_lock:
+            if _job_running():
+                return JSONResponse({"error": "an import is already running"}, status_code=409)
+            job = ImportJob()
+            # Dry runs keep the app's detector (the CLI swaps in a null one);
+            # run_import short-circuits before detection, so it is never called.
+            thread = threading.Thread(
+                target=importer_runner.run_import,
+                args=(store, detector),
+                kwargs={
+                    "sources": sources,
+                    "since": since,
+                    "until": until,
+                    "project": project,
+                    "exclude_session_ids": exclude_session_ids,
+                    "dry_run": dry_run,
+                    "settings": cfg,
+                    "job": job,
+                },
+                name="privacy-kit-import",
+                daemon=True,
+            )
+            import_state["job"] = job
+            import_state["thread"] = thread
+            thread.start()
+        return JSONResponse(job.snapshot(), status_code=202)
+
+    @app.get("/api/v1/import/status")
+    async def api_import_status() -> JSONResponse:
+        job = import_state["job"]
+        if job is None:
+            return JSONResponse({"state": "idle"})
+        return JSONResponse(job.snapshot())
 
     @app.get("/api/v1/texts")
     async def api_texts(

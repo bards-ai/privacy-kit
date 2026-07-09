@@ -4,6 +4,7 @@
 ``privacy-kit setup``   print the env/config to point a tool at the gateway
 ``privacy-kit report``  summarize the audit log
 ``privacy-kit scan``    one-off PII scan of a file or stdin
+``privacy-kit import``  import past Claude Code / Codex conversations into the audit log
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from __future__ import annotations
 import shlex
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -490,6 +493,100 @@ def scan(
     for span in spans:
         snippet = span.text_of(text).replace("\n", " ")
         typer.echo(f"  {span.label:<28} {span.score:.2f}  {snippet!r}")
+
+
+@app.command("import")
+def import_history(
+    source: list[str] = typer.Option(
+        ["claude-code", "codex"],
+        "--source",
+        "-s",
+        help="History source(s) to import: claude-code, codex. Repeatable.",
+    ),
+    since: datetime | None = typer.Option(
+        None, "--since", help="Only sessions modified on/after this date (e.g. 2026-06-01)."
+    ),
+    until: str | None = typer.Option(
+        None,
+        "--until",
+        help="Only sessions modified on/before this date; a date-only value covers "
+        "the whole day. Defaults to now.",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Claude Code only: project-directory substring filter."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Discover and dedupe only; write nothing."
+    ),
+    db: str | None = typer.Option(None, "--db", help="Audit DB path (defaults to settings)."),
+) -> None:
+    """Import past conversations from on-disk tool history into the audit log.
+
+    Reads Claude Code session transcripts (~/.claude/projects) and Codex rollout
+    files (~/.codex/sessions), runs on-device PII detection over every message,
+    and records them like proxied traffic (source "claude-code-import" /
+    "codex-import"). Sessions already in the log are skipped, so re-running is
+    incremental. Loads the on-device model unless --dry-run.
+    """
+    from privacy_kit.gateway.config import get_settings
+    from privacy_kit.gateway.importer import run_import
+    from privacy_kit.gateway.importer.runner import SOURCES, parse_until
+    from privacy_kit.gateway.store import AuditStore
+
+    bad = [s for s in source if s not in SOURCES]
+    if bad:
+        typer.secho(f"Unknown source(s): {', '.join(bad)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    until_dt: datetime | None = None
+    if until:
+        until_dt = parse_until(until)
+        if until_dt is None:
+            typer.secho(
+                "Invalid --until: use YYYY-MM-DD or an ISO datetime",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+    settings = get_settings()
+    store = AuditStore(db or settings.db_path)
+    if dry_run:
+        from privacy_kit.core.detectors import NullDetector
+
+        detector: Any = NullDetector()
+    else:
+        from privacy_kit.core.detectors import BardsAiOnnxDetector
+
+        typer.secho("Loading detection model…", err=True)
+        detector = BardsAiOnnxDetector()
+
+    if since is not None and since.tzinfo is None:
+        since = since.astimezone()
+
+    job = run_import(
+        store,
+        detector,
+        sources=list(source),
+        since=since,
+        until=until_dt,
+        project=project,
+        dry_run=dry_run,
+        settings=settings,
+    )
+    if job.state == "error":
+        typer.secho(f"Import failed: {job.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    label = "would import" if dry_run else "imported"
+    typer.echo(
+        f"Sessions: {job.found} found, {job.skipped} skipped (already present or empty), "
+        f"{job.imported} {label}, {job.failed} failed"
+    )
+    if not dry_run:
+        typer.echo(f"Turns recorded: {job.turns}, PII entities: {job.entities}")
+    elif job.turns:
+        typer.echo(f"Turns that would be recorded: {job.turns}")
 
 
 @app.command()

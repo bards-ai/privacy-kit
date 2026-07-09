@@ -80,6 +80,121 @@ export function alignPii(original: string | null, anonymized: string): Aligned {
   return { parts, ok, hasOriginal: true };
 }
 
+// One piece of a hunked segment. `text` is shown inline — its parts may include
+// PII spans and literals, and literals may span newlines. `gap` is a collapsed
+// PII-free stretch behind an expander; `lineShaped` records whether it starts
+// and ends on line boundaries (so the caller can label it "N lines hidden") vs.
+// a mid-line cut through a very long line/paragraph ("N characters hidden").
+export interface HunkText {
+  kind: "text";
+  parts: PiiPart[];
+}
+export interface HunkGap {
+  kind: "gap";
+  parts: PiiPart[]; // the hidden content, revealed on expand
+  chars: number;
+  lines: number;
+  lineShaped: boolean;
+}
+export type HunkPiece = HunkText | HunkGap;
+
+// Characters of context kept on each side of a PII span; how far past a boundary
+// we look for a newline to snap to; and the smallest stretch worth collapsing.
+const HUNK_CONTEXT = 120;
+const HUNK_SNAP = 200;
+const HUNK_MIN_GAP = 80;
+
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+// Collapse the PII-free stretches of an aligned segment, keeping ~HUNK_CONTEXT
+// chars of context around each detected PII span. Collapse boundaries snap to a
+// nearby newline when there is one, so content with many short lines collapses
+// on line boundaries (git-diff style, "N lines hidden") while a single very long
+// line/paragraph collapses mid-line ("N characters hidden") — the case pure
+// line-based hunking cannot handle. Each literal in `aligned.parts` is already
+// the maximal run between two PII anchors (or the segment start/end), so we can
+// decide the cut per literal.
+export function hunkify(aligned: Aligned): {
+  pieces: HunkPiece[];
+  piiCount: number;
+  lineCount: number;
+} {
+  const parts = aligned.parts;
+  const piiCount = parts.reduce((n, p) => n + (p.kind === "pii" ? 1 : 0), 0);
+  const lineCount =
+    parts.reduce((n, p) => n + (p.kind === "lit" ? countNewlines(p.text) : 0), 0) + 1;
+
+  const pieces: HunkPiece[] = [];
+  let buffer: PiiPart[] = [];
+  const flush = () => {
+    if (buffer.length) {
+      pieces.push({ kind: "text", parts: buffer });
+      buffer = [];
+    }
+  };
+
+  let piiSeen = 0;
+  for (const part of parts) {
+    if (part.kind === "pii") {
+      buffer.push(part);
+      piiSeen += 1;
+      continue;
+    }
+    const L = part.text;
+    // No PII on the left (segment start / no PII yet) means no left context to
+    // keep — the gap can start at this literal's start; likewise on the right.
+    const keepLeft = piiSeen > 0 ? HUNK_CONTEXT : 0;
+    const keepRight = piiCount - piiSeen > 0 ? HUNK_CONTEXT : 0;
+    if (L.length <= keepLeft + keepRight + HUNK_MIN_GAP) {
+      buffer.push(part);
+      continue;
+    }
+
+    // Head: keep `keepLeft` chars after the previous PII, extended to the next
+    // newline when one is within HUNK_SNAP so short lines stay whole.
+    let head = keepLeft;
+    let headSnapped = keepLeft === 0;
+    const nlAfter = L.indexOf("\n", keepLeft);
+    if (nlAfter !== -1 && nlAfter < keepLeft + HUNK_SNAP) {
+      head = nlAfter + 1;
+      headSnapped = true;
+    }
+    // Tail: keep `keepRight` chars before the next PII, retracted to a preceding
+    // newline when one is within HUNK_SNAP.
+    let tail = L.length - keepRight;
+    let tailSnapped = keepRight === 0;
+    const nlBefore = L.lastIndexOf("\n", tail - 1);
+    if (nlBefore !== -1 && nlBefore >= tail - HUNK_SNAP) {
+      tail = nlBefore + 1;
+      tailSnapped = true;
+    }
+    if (tail - head < HUNK_MIN_GAP) {
+      buffer.push(part);
+      continue;
+    }
+
+    if (head > 0) buffer.push({ kind: "lit", text: L.slice(0, head) });
+    flush();
+    const gapText = L.slice(head, tail);
+    pieces.push({
+      kind: "gap",
+      parts: [{ kind: "lit", text: gapText }],
+      chars: gapText.length,
+      lines: countNewlines(gapText),
+      lineShaped: headSnapped && tailSnapped,
+    });
+    const rest = L.slice(tail);
+    if (rest.length) buffer.push({ kind: "lit", text: rest });
+  }
+  flush();
+
+  return { pieces, piiCount, lineCount };
+}
+
 // Distinct masked values per entity type across several aligned segments, keyed
 // by placeholder (the same value reuses one placeholder within a request).
 export function valuesByType(aligneds: Aligned[]): Map<string, PiiSpan[]> {

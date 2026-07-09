@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ArrowRight, Cpu, Database, Hash, ShieldAlert } from "lucide-react";
+import { Activity, ArrowRight, Cpu, Database, Download, Hash, ShieldAlert } from "lucide-react";
 import Link from "next/link";
 
 import { ActivityAreaChart, EntityBarChart, SourcePie } from "@/components/charts";
@@ -38,11 +38,24 @@ export function OverviewLive({
 
   if (summary.interactions === 0) {
     return (
-      <EmptyState
-        icon={<Activity className="h-8 w-8" />}
-        title="No interactions recorded yet"
-        description="Route a tool through the gateway (see Settings) and send a prompt — it will show up here. Until then, try the Live preview to see PII detection in action."
-      />
+      <div className="space-y-4">
+        <div className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
+          <Download className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <p>
+            <span className="font-medium">Already have conversations?</span> You can import your
+            existing Claude Code and Codex history from{" "}
+            <Link href="/settings" className="text-primary hover:underline">
+              Settings → Import history
+            </Link>
+            .
+          </p>
+        </div>
+        <EmptyState
+          icon={<Activity className="h-8 w-8" />}
+          title="No interactions recorded yet"
+          description="Route a tool through the gateway (see Settings) and send a prompt — it will show up here. Until then, try the Live preview to see PII detection in action."
+        />
+      </div>
     );
   }
 
