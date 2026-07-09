@@ -35,10 +35,13 @@ class Settings(BaseSettings):
     """Minimum per-entity confidence to treat a span as PII."""
 
     # --- Audit store ---
-    db_path: Path = Path("privacy_kit.sqlite")
+    db_path: Path = Field(default_factory=lambda: Path.home() / ".privacy-kit" / "audit.sqlite")
     """SQLite file for the audit log: metadata plus, per ``save_texts``,
     user-authored text and tool/file data segments (original + anonymized)
-    in plaintext."""
+    in plaintext. Defaults to a stable per-user location
+    (``~/.privacy-kit/audit.sqlite``) so the gateway reuses one audit log
+    regardless of the working directory it is launched from; the file is
+    created ``0o600``. Override with ``PII_DB_PATH``."""
 
     save_texts: Literal["anonymized", "all"] = "all"
     """Which text segments to save (original + anonymized, plaintext).  System
@@ -66,6 +69,16 @@ class Settings(BaseSettings):
     "monitor" (default): detect and log PII to the audit store, but forward the
     prompt unchanged — real values reach the upstream LLM. "pseudonymize": replace
     PII with reversible placeholders before forwarding, and rehydrate the response."""
+
+    policy_overrides: dict[str, Literal["keep", "redact", "pseudonymize", "block"]] = {}
+    """Per-entity-type actions layered over ``policy``. Keys are entity labels
+    (``PERSON_NAME``) or prefix wildcards (``SECRET_*``); values: "keep" (forward
+    the original, audit only), "redact" (one-way ``[REDACTED]``, never
+    rehydrated), "pseudonymize" (reversible ``[TYPE_N]``), "block" (refuse the
+    request with a 403 before anything is forwarded). Overrides apply in both
+    global modes — ``PII_POLICY_OVERRIDES='{"SECRET_*": "block"}'`` stops
+    credentials even in monitor mode. Exact label beats wildcard; the longest
+    wildcard prefix wins."""
 
     # --- Cursor hooks ---
     cursor_block: bool = False

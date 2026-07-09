@@ -4,13 +4,64 @@
 
 ### Added
 
+- **Deterministic secret & checksum detection.** Detection is no longer
+  model-only: a deterministic layer now always runs alongside the NER model
+  (`build_detector("local")` returns the composite; `"regex"` builds the
+  deterministic layer alone — instant startup, no model download; `"model"`
+  is the NER model alone).
+  - `SecretDetector` (`SECRET_*` labels): AWS/GCP/GitHub/GitLab/OpenAI/
+    Anthropic/Hugging Face/Slack/Stripe/SendGrid/npm/PyPI keys and tokens,
+    JWTs, PEM private-key blocks, credentials in connection URLs (masks only
+    the password), `Authorization:` header values, and generic
+    `API_KEY=…`-style assignments gated by a Shannon-entropy floor. Patterns
+    are vendored from the gitleaks ruleset (MIT) as a curated in-tree table;
+    `make sync-secret-rules` diffs them against upstream.
+  - `ChecksumPiiDetector`: payment cards (Luhn), IBANs (mod-97),
+    international `+…` phones, dashed US SSNs — emitting the model's own
+    labels so Vault placeholders unify across both paths.
+  - `CompositeDetector` unions spans; on overlap, `SECRET_*` wins over any
+    model span, then the wider span, then the higher score.
+  - The gateway and `privacy-kit scan` use the composite automatically: a
+    `.env` file in a proxied tool read is now caught (audited in `monitor`,
+    replaced in `pseudonymize`) even though the NER model has no label for
+    credentials.
+- **Per-entity policy overrides** (`PII_POLICY_OVERRIDES`, JSON): layer
+  per-type actions over the global `PII_POLICY` mode. Keys are entity labels
+  or prefix wildcards (`SECRET_*`); actions are `keep`, `redact` (one-way
+  `[REDACTED]`, never rehydrated), `pseudonymize` (reversible `[TYPE_N]`),
+  and `block` — the request is refused with a 403 (`privacy_kit_blocked`,
+  with entity counts) before anything reaches the upstream, and the audit row
+  records `policy="block"`. Overrides apply in both modes, so
+  `{"SECRET_*": "block"}` stops credentials even under `monitor`. Cursor
+  hooks honor `block`-typed entities too (deny), alongside the existing
+  blunter `PII_CURSOR_BLOCK`. Exact label beats wildcard; longest wildcard
+  prefix wins.
+- Behavior note: under `monitor` with no overrides, the response
+  de-anonymization vault now stays empty (the upstream saw originals, so no
+  placeholder can legitimately come back). Previously monitor mode populated
+  the vault as a side effect and would rehydrate placeholder-shaped text
+  echoed by the upstream.
+
+### Changed
+
+- **Audit DB default location & permissions**: `PII_DB_PATH` now defaults to a
+  stable per-user path `~/.privacy-kit/audit.sqlite` (was `privacy_kit.sqlite`
+  relative to the working directory, which scattered stray DBs and started a
+  fresh empty log when launched from a different directory). The file is created
+  `0o600` (owner-only) since it holds plaintext PII, and its parent directory is
+  created on demand. Set `PII_DB_PATH` to override; the Docker image still uses
+  `/data/privacy_kit.sqlite`. Existing logs at the old path are not migrated —
+  move the file or set `PII_DB_PATH` to keep prior history.
+
+### Added
+
 - **Saved request texts**: the audit DB gains an `interactiontext` table
   storing, per proxied request, each text segment's original and anonymized
   form (plaintext, linked to the interaction). `PII_SAVE_TEXTS` picks the
-  scope: `anonymized` (default — only segments where PII was replaced) or
-  `all` (every segment). This is a deliberate change from the previous
-  metadata-only design: the local SQLite file now contains raw originals of
-  PII-bearing segments by default. The OTel sink and `count_tokens` remain
+  scope: `all` (default — every user/tool segment) or `anonymized` (only
+  segments where PII was replaced). This is a deliberate change from the
+  previous metadata-only design: the local SQLite file now contains raw
+  originals of user/tool segments by default. The OTel sink and `count_tokens` remain
   text-free; model output is never stored. Existing DB files get the new
   table automatically on next start.
 - **Codex with a ChatGPT-account login** (free/Plus/Pro, no API key) can now be

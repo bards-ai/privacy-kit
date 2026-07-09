@@ -26,6 +26,15 @@ def make_store(tmp_path: Path) -> AuditStore:
     return AuditStore(tmp_path / "audit.sqlite")
 
 
+def test_db_file_created_owner_only(tmp_path: Path) -> None:
+    # The audit log holds plaintext PII, so the file must be 0o600 and its
+    # parent directory is created on demand (stable per-user location default).
+    db = tmp_path / "nested" / "audit.sqlite"
+    AuditStore(db)
+    assert db.exists()
+    assert (db.stat().st_mode & 0o777) == 0o600
+
+
 def test_record_and_summarize(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     store.record(

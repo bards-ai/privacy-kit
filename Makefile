@@ -65,6 +65,9 @@ install-all: ## Install with every optional extra (transformers, langfuse, langc
 
 check: lint type test ## Run the full gate: lint + type + test (run before every commit)
 
+sync-secret-rules: ## Diff the vendored secret rules against the upstream gitleaks ruleset
+	uv run python scripts/sync_secret_rules.py
+
 lint: ## Lint with ruff
 	uv run ruff check .
 	uv run ruff format --check .
