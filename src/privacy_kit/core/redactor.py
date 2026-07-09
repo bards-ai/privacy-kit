@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
@@ -23,6 +24,8 @@ class Redactor:
         include_paths: list[str] | None = None,
         exclude_paths: list[str] | None = None,
         expand_to_word_boundaries: bool = True,
+        allow_terms: Sequence[str] | None = None,
+        allow_patterns: Sequence[str] | None = None,
     ) -> None:
         self.detector = detector or build_detector()
         self.replacement = replacement
@@ -32,10 +35,16 @@ class Redactor:
         self.include_paths = _compile_path_patterns(include_paths)
         self.exclude_paths = _compile_path_patterns(exclude_paths)
         self.expand_to_word_boundaries = expand_to_word_boundaries
+        self.allow_terms = (
+            {term.strip().casefold() for term in allow_terms} if allow_terms else set()
+        )
+        self.allow_patterns = _compile_allow_patterns(allow_patterns)
 
     def detect(self, text: str) -> list[Span]:
         spans = self.detector.detect(text)
-        return [span for span in spans if self._should_redact(span)]
+        return [
+            span for span in spans if self._should_redact(span) and not self._is_allowed(text, span)
+        ]
 
     def spans_for_text(self, text: str) -> list[Span]:
         return self._prepare_spans(text, self.detect(text))
@@ -87,6 +96,14 @@ class Redactor:
             return False
         return span.label not in self.exclude_labels
 
+    def _is_allowed(self, text: str, span: Span) -> bool:
+        if not self.allow_terms and not self.allow_patterns:
+            return False
+        span_text = text[span.start : span.end].strip()
+        if span_text.casefold() in self.allow_terms:
+            return True
+        return any(pattern.fullmatch(span_text) for pattern in self.allow_patterns)
+
     def _prepare_spans(self, text: str, spans: list[Span]) -> list[Span]:
         if not self.expand_to_word_boundaries:
             return spans
@@ -119,6 +136,28 @@ class Redactor:
         return any(_path_matches(pattern, path) for pattern in self.exclude_paths)
 
 
+def load_allow_file(path: str | os.PathLike[str]) -> tuple[list[str], list[str]]:
+    """Load allowlist terms and regex patterns from a text file.
+
+    One entry per line. Blank lines and lines starting with ``#`` are
+    ignored. Lines starting with ``re:`` are treated as regex patterns
+    (the rest of the line, stripped, is the pattern); everything else is
+    a literal term.
+    """
+    terms: list[str] = []
+    patterns: list[str] = []
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("re:"):
+                patterns.append(line[len("re:") :].strip())
+            else:
+                terms.append(line)
+    return terms, patterns
+
+
 def _is_boundary_punctuation(character: str) -> bool:
     return re.match(r"[.,;:!?\"'()\[\]{}]", character, flags=re.UNICODE) is not None
 
@@ -137,6 +176,18 @@ def _merge_spans(spans: list[Span]) -> list[Span]:
             min(previous.score, span.score),
         )
     return merged
+
+
+def _compile_allow_patterns(patterns: Sequence[str] | None) -> list[re.Pattern[str]]:
+    if not patterns:
+        return []
+    compiled: list[re.Pattern[str]] = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern))
+        except re.error as exc:
+            raise ValueError(f"Invalid allow_patterns regex {pattern!r}: {exc}") from exc
+    return compiled
 
 
 def _compile_path_patterns(paths: list[str] | None) -> list[PathPattern] | None:

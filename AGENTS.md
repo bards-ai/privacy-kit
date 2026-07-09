@@ -27,3 +27,23 @@
   keeps label placeholders like `[PERSON_NAME]`.
 - Examples live under `examples/` as repo onboarding assets, not installed package
   modules. Add examples only for integrations that are actually supported.
+- LangSmith masking must be client-side via `Client(anonymizer=...)` /
+  `hide_metadata=True`. LangChain's PIIMiddleware does NOT protect traces —
+  metadata, error strings, and non-agent `@traceable`s still leak, and the JS
+  variant restores originals after the model call. Route trace scrubbing through
+  the LangSmith client, not the agent middleware.
+- LangSmith has no post-ingestion scrub. Once a run is uploaded raw, the only
+  remediation is trace deletion or a workspace TTL — so anonymize before upload.
+- `make_anonymizer` passes `Redactor.redact` directly as the anonymizer (it's
+  already `dict -> dict`, walks nesting, and honors `include_paths`/`exclude_paths`).
+  We deliberately do NOT wrap `redact_text` via `langsmith.anonymizer.create_anonymizer`
+  because that calls per-string and would drop path filtering. LangSmith applies
+  the anonymizer to inputs/outputs and a `{"error": ...}`-wrapped error string.
+
+- LangSmith EU accounts: SDK defaults to the US endpoint (`api.smith.langchain.com`) and EU keys get bare 403 Forbidden on every call. Fix: `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`. Worth mentioning in README/troubleshooting for the LangSmith integration.
+- `load_allow_file` (in `core/redactor.py`) is the file-based allowlist loader:
+  one entry per line, `#` comments, `re:` prefix for regex patterns, everything
+  else a literal term. `allow_file`/`PII_ALLOW_FILE` on `make_mask`/`make_anonymizer`
+  MERGE with explicit `allow_terms`/`allow_patterns` (explicit args first, file
+  entries appended) rather than overriding them — same "kwarg wins over env,
+  but file is additive" shape worth keeping consistent if this pattern grows.

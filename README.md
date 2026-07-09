@@ -201,6 +201,37 @@ The callback protects LangChain/LangGraph payloads before they are exported to
 Langfuse. This includes nested message objects and metadata that LangChain passes
 through callback events.
 
+### LangSmith In One Line
+
+If you trace with LangSmith, install the extra and build a preconfigured client:
+
+```bash
+pip install 'privacy-kit[langsmith]'
+```
+
+```python
+from privacy_kit.integrations.langsmith import make_client
+
+client = make_client()
+```
+
+`make_client()` wires an anonymizer into `Client(anonymizer=...)`, which LangSmith
+applies client-side to run inputs, outputs, and error strings before upload. It
+also sets `hide_metadata=True` by default, because run metadata is not routed
+through the anonymizer and would otherwise be sent raw.
+
+If you manage the client yourself, pass the anonymizer directly:
+
+```python
+from langsmith import Client
+from privacy_kit.integrations.langsmith import make_anonymizer
+
+client = Client(anonymizer=make_anonymizer(), hide_metadata=True)
+```
+
+`make_anonymizer()` takes the same keyword arguments as `make_mask()`
+(`include_labels`, `exclude_paths`, `allow_terms`, etc.).
+
 ### Direct Redaction
 
 Use `Redactor` directly if you want to redact text or arbitrary JSON-like payloads.
@@ -294,6 +325,59 @@ export PII_EXCLUDE_PATHS="metadata.trace_id,usage"
 export PII_EXCLUDE_LABELS="ORGANIZATION_NAME"
 ```
 
+### Allowlist
+
+Some detected terms are false positives you never want masked (your own company
+name, a product, a public support address). Pass an allowlist and matching spans
+are left untouched:
+
+```python
+make_mask(
+    allow_terms=["Acme Corp", "support@acme.com"],   # case-insensitive exact match
+    allow_patterns=[r"ACME-\d{4}"],                   # regex, matched with re.fullmatch
+)
+```
+
+`allow_terms` matches the detected span's text case-insensitively (surrounding
+whitespace is stripped). `allow_patterns` are regexes matched against the span
+text with `re.fullmatch`. Both are checked before word-boundary expansion, so an
+allowed term is never pulled into an adjacent redaction. The same
+`allow_terms`/`allow_patterns` arguments work on `Redactor`, `make_mask()`,
+`make_anonymizer()`, and via `make_langfuse_callback(mask_kwargs=...)`.
+
+Environment variables:
+
+```bash
+export PII_ALLOW_TERMS="Acme Corp,support@acme.com"
+export PII_ALLOW_PATTERNS="ACME-\d{4}"
+```
+
+For a longer allowlist, keep it in a file instead of an env var. Pass
+`allow_file` (or set `PII_ALLOW_FILE`) with a path to a UTF-8 text file, one
+entry per line: blank lines and lines starting with `#` are ignored, and
+lines starting with `re:` are regex patterns (matched with `re.fullmatch`,
+same as `allow_patterns`); everything else is a literal term.
+
+```
+# company names
+Acme Corp
+support@acme.com
+
+# internal ID formats
+re: ACME-\d{4}
+```
+
+```python
+make_mask(allow_file="allowlist.txt")
+```
+
+```bash
+export PII_ALLOW_FILE="allowlist.txt"
+```
+
+If both `allow_file` and `allow_terms`/`allow_patterns` are given, they are
+merged — the explicit arguments first, then the file's entries.
+
 ## Configuration
 
 Everything reads the same `PII_*` environment variables:
@@ -329,6 +413,7 @@ from cache after that.
 | Target | Status | API |
 | --- | --- | --- |
 | Langfuse SDK | Ready | `Langfuse(mask=make_mask())` |
+| LangSmith SDK | Ready | `make_client()` or `Client(anonymizer=make_anonymizer(), hide_metadata=True)` |
 | LangChain / LangGraph | Ready | `make_langfuse_callback()` with `config={"callbacks": [...]}` |
 | Claude Code | Ready | gateway: `privacy-kit setup claude-code` |
 | Codex (API key) | Ready | gateway: `privacy-kit setup codex --apply` |
