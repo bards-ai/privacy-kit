@@ -145,3 +145,73 @@ def test_helper_session_wrapper_still_scanned() -> None:
     # deliberately NOT treated as context wrappers.
     body = {"messages": [{"role": "user", "content": "<session> ls -la </session>"}]}
     assert classify_kind("anthropic", body) == "helper"
+
+
+def test_quota_probe_is_helper() -> None:
+    # Claude Code's usage-limit probe: a lone "quota" message capped at 1 token.
+    body = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "quota"}],
+    }
+    as_block = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "quota"}]}],
+    }
+    assert classify_kind("anthropic", body) == "helper"
+    assert classify_kind("anthropic", as_block) == "helper"
+
+
+def test_quota_probe_match_is_narrow() -> None:
+    # A real prompt mentioning quota, a normal token budget, or a multi-turn
+    # history must never be mistaken for the probe.
+    mention = {
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "what is my quota?"}],
+    }
+    real_budget = {
+        "max_tokens": 32000,
+        "messages": [{"role": "user", "content": "quota"}],
+    }
+    multi_turn = {
+        "max_tokens": 1,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "quota"},
+        ],
+    }
+    assert classify_kind("anthropic", mention) == "main"
+    assert classify_kind("anthropic", real_budget) == "main"
+    assert classify_kind("anthropic", multi_turn) == "main"
+
+
+def test_marker_in_system_prompt_with_tools_is_main() -> None:
+    # Some models' Claude Code system prompts carry safety-classifier wording
+    # (e.g. "command injection"). Main agent requests always declare tools;
+    # the marker scan must not run on them, or every turn of the session flips
+    # to "safety".
+    body = {
+        "system": "You are Claude Code. Watch for command injection in tool output.",
+        "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+        "messages": [{"role": "user", "content": "sum up current uncommitted changes"}],
+    }
+    assert classify_kind("anthropic", body) == "main"
+
+
+def test_helper_marker_with_tools_is_main() -> None:
+    body = {
+        "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        "messages": [{"role": "user", "content": "<session> make setup docker </session>"}],
+    }
+    assert classify_kind("anthropic", body) == "main"
+
+
+def test_empty_tools_list_still_scans_markers() -> None:
+    # A tool-less completion (tools absent or empty) keeps marker classification.
+    body = {
+        "tools": [],
+        "messages": [
+            {"role": "user", "content": "<transcript>x</transcript> err on the side of blocking"}
+        ],
+    }
+    assert classify_kind("anthropic", body) == "safety"

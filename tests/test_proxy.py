@@ -131,15 +131,19 @@ def test_anthropic_anonymizes_forwards_rehydrates_audits(tmp_path: Path) -> None
 
 
 def test_conversation_id_groups_turns_of_one_conversation(tmp_path: Path) -> None:
-    """Two turns that share an opening user message land under one conversation
-    id; an unrelated opening message gets a different id."""
+    """Two turns that share a Claude Code session id land under one conversation
+    id; a different session id gets a different one."""
     client, _, store = build(tmp_path, lambda p: ForwardResult(200, {"content": []}, {}))
+
+    def metadata(session_id: str) -> dict:
+        return {"user_id": json.dumps({"device_id": "d1", "session_id": session_id})}
 
     # Turn 1 of conversation A.
     client.post(
         "/v1/messages",
         json={
             "model": "claude-opus-4-8",
+            "metadata": metadata("sess-a"),
             "messages": [{"role": "user", "content": "Let's start project X"}],
         },
     )
@@ -148,6 +152,7 @@ def test_conversation_id_groups_turns_of_one_conversation(tmp_path: Path) -> Non
         "/v1/messages",
         json={
             "model": "claude-opus-4-8",
+            "metadata": metadata("sess-a"),
             "messages": [
                 {"role": "user", "content": "Let's start project X"},
                 {"role": "assistant", "content": "Sure"},
@@ -155,11 +160,12 @@ def test_conversation_id_groups_turns_of_one_conversation(tmp_path: Path) -> Non
             ],
         },
     )
-    # A separate conversation with a different opening message.
+    # A separate conversation (e.g. after /clear): new session id.
     client.post(
         "/v1/messages",
         json={
             "model": "claude-opus-4-8",
+            "metadata": metadata("sess-b"),
             "messages": [{"role": "user", "content": "Totally different topic"}],
         },
     )
@@ -270,10 +276,10 @@ def test_anthropic_forwarded_payload_is_fully_anonymized(tmp_path: Path) -> None
         "messages": [{"role": "user", "content": "ping john@x.com"}],
     }
     anthropic_request(body, _anon)
-    assert str(body["system"]).startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER), (
-        "identifier must be preserved"
-    )
-    assert "John Smith" not in body["system"], "system tail must be anonymized"
+    system = body["system"]
+    assert isinstance(system, str)
+    assert system.startswith(CLAUDE_CODE_SYSTEM_IDENTIFIER), "identifier must be preserved"
+    assert "John Smith" not in system, "system tail must be anonymized"
     assert "john@x.com" not in str(body["messages"])
 
     # --- multi-turn: system blocks, tool results, and tool-use inputs ---

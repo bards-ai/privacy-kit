@@ -38,6 +38,7 @@ Supported formats:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from enum import Enum, auto
@@ -392,56 +393,52 @@ def openai_responses_response(body: dict[str, Any], deanon: TextFn) -> None:
 # --- conversation grouping --------------------------------------------------
 
 
-def _first_user_text_anthropic(body: dict[str, Any]) -> str | None:
-    """Extract first user message text from Anthropic Messages API request."""
-    messages = body.get("messages", [])
-    for msg in messages:
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            content = msg.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        text = block.get("text")
-                        if isinstance(text, str):
-                            return text
-    return None
-
-
 def _first_user_text_openai_chat(body: dict[str, Any]) -> str | None:
-    """Extract first user message text from OpenAI Chat Completions request."""
+    """Extract the first user-*typed* text from an OpenAI Chat Completions request.
+
+    Harness-injected blocks (``<system-reminder>`` context, slash-command
+    wrappers — see ``_is_injected_system_text``) are skipped: a session that
+    opens with injected content would otherwise key every such session on the
+    same near-constant text instead of the prompt the user actually typed.
+    """
     messages = body.get("messages", [])
     for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "user":
             content = msg.get("content")
             if isinstance(content, str):
-                return content
-            if isinstance(content, list):
+                if not _is_injected_system_text(content):
+                    return content
+            elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict):
                         text = block.get("text")
-                        if isinstance(text, str):
+                        if isinstance(text, str) and not _is_injected_system_text(text):
                             return text
     return None
 
 
 def _first_user_text_openai_responses(body: dict[str, Any]) -> str | None:
-    """Extract first user message text from OpenAI Responses API request."""
+    """Extract first user-typed text from an OpenAI Responses API request.
+
+    Skips harness-injected blocks (Codex wraps environment/instructions in
+    ``<environment_context>``/``<user_instructions>``); see
+    ``_first_user_text_openai_chat``.
+    """
     inp = body.get("input")
     if isinstance(inp, str):
-        return inp
+        return None if _is_injected_system_text(inp) else inp
     if isinstance(inp, list):
         for item in inp:
             if isinstance(item, dict) and item.get("role") == "user":
                 content = item.get("content")
                 if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
+                    if not _is_injected_system_text(content):
+                        return content
+                elif isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict):
                             text = block.get("text")
-                            if isinstance(text, str):
+                            if isinstance(text, str) and not _is_injected_system_text(text):
                                 return text
     return None
 
@@ -470,23 +467,67 @@ def _explicit_session_id_openai_responses(body: dict[str, Any]) -> str | None:
     return None
 
 
+_LEGACY_SESSION_ID_RE = re.compile(
+    r"_session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+
+
+def _explicit_session_id_anthropic(body: dict[str, Any]) -> str | None:
+    """Look for Claude Code's per-session id on a Messages API call.
+
+    Confirmed by capturing real Claude Code traffic: every request carries
+    ``metadata.user_id`` holding a JSON-encoded object whose ``session_id``
+    equals the local transcript filename in ``~/.claude/projects/<project>/``
+    and changes when a new session starts (``/clear``, new window). Matching
+    the transcript stem also makes live ids line up with what the history
+    importer records (``importer/runner.py`` uses the same stem), so imports
+    dedupe against already-proxied sessions. Older Claude Code versions sent
+    a plain string ending in ``_session_<uuid>``; take the uuid from that
+    shape too.
+
+    Never fall back to the raw ``user_id`` itself: the Messages API documents
+    it as a stable per-*user* identifier, so a generic client's value would
+    merge all of that user's conversations into one.
+    """
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    user_id = metadata.get("user_id")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    try:
+        parsed = json.loads(user_id)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        session_id = parsed.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+    match = _LEGACY_SESSION_ID_RE.search(user_id)
+    return match.group(1) if match else None
+
+
 def conversation_key(wire: str, body: dict[str, Any]) -> str | None:
     """Derive a stable conversation identifier for a request.
 
     Prefers an explicit, client-supplied per-conversation id when the wire
-    format offers one (see ``_explicit_session_id_openai_responses``). Falls
-    back to hashing the first user message's text: since AI APIs are
-    stateless and resend full history on each turn, that text is a stable,
-    deterministic prefix shared by every turn of the same conversation. We
-    hash it to keep it opaque.
+    format offers one (see ``_explicit_session_id_anthropic`` and
+    ``_explicit_session_id_openai_responses``). The anthropic wire uses only
+    that: every Claude Code request carries a session id, and for other
+    clients no grouping beats wrong grouping (a shared opening prompt would
+    silently merge unrelated conversations), so without one the request stays
+    ungrouped. The OpenAI formats fall back to hashing the first user-typed
+    message text: since AI APIs are stateless and resend full history on each
+    turn, that text is a stable, deterministic prefix shared by every turn of
+    the same conversation. We hash it to keep it opaque.
 
     For Cursor hook events, check for an explicit conversation_id field in
     the body; if absent, return None (each hook stays ungrouped).
 
-    Known limitation: for wire formats without an explicit id, if history is
-    compacted/summarized mid-session, the first message text can change,
-    splitting one real conversation into multiple conversation_id values.
-    Acceptable for v1.
+    Known limitation: for OpenAI-format clients without an explicit id, if
+    history is compacted/summarized mid-session, the first message text can
+    change, splitting one real conversation into multiple conversation_id
+    values. Acceptable for v1.
 
     Args:
         wire: Wire format string ("anthropic", "openai_chat", "openai_responses", etc.)
@@ -501,16 +542,17 @@ def conversation_key(wire: str, body: dict[str, Any]) -> str | None:
         conv_id = body.get("conversation_id")
         return str(conv_id) if conv_id else None
 
+    if wire == "anthropic":
+        return _explicit_session_id_anthropic(body)
+
     if wire == "openai_responses":
         explicit = _explicit_session_id_openai_responses(body)
         if explicit:
             return explicit
 
-    # For stateless API formats without an explicit id, extract first user text.
+    # For stateless OpenAI formats without an explicit id, extract first user text.
     first_user = None
-    if wire == "anthropic":
-        first_user = _first_user_text_anthropic(body)
-    elif wire == "openai_chat":
+    if wire == "openai_chat":
         first_user = _first_user_text_openai_chat(body)
     elif wire == "openai_responses":
         first_user = _first_user_text_openai_responses(body)

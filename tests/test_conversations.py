@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from privacy_kit.gateway.store import AuditStore
 # --- conversation_key -------------------------------------------------------
 
 
-def test_conversation_key_stable_across_turns_anthropic() -> None:
+def test_conversation_key_stable_across_turns_openai_chat() -> None:
     """Same opening user message → same key even as history grows each turn."""
     turn1 = {"messages": [{"role": "user", "content": "Hello there"}]}
     turn2 = {
@@ -25,15 +26,15 @@ def test_conversation_key_stable_across_turns_anthropic() -> None:
             {"role": "user", "content": "A follow-up"},
         ]
     }
-    k1 = conversation_key("anthropic", turn1)
-    k2 = conversation_key("anthropic", turn2)
+    k1 = conversation_key("openai_chat", turn1)
+    k2 = conversation_key("openai_chat", turn2)
     assert k1 is not None
     assert k1 == k2
 
 
 def test_conversation_key_differs_for_different_openings() -> None:
-    a = conversation_key("anthropic", {"messages": [{"role": "user", "content": "topic A"}]})
-    b = conversation_key("anthropic", {"messages": [{"role": "user", "content": "topic B"}]})
+    a = conversation_key("openai_chat", {"messages": [{"role": "user", "content": "topic A"}]})
+    b = conversation_key("openai_chat", {"messages": [{"role": "user", "content": "topic B"}]})
     assert a != b
 
 
@@ -44,8 +45,95 @@ def test_conversation_key_reads_first_text_block() -> None:
             {"role": "user", "content": [{"type": "text", "text": "block hello"}]},
         ]
     }
-    assert conversation_key("anthropic", body) == conversation_key(
-        "anthropic", {"messages": [{"role": "user", "content": "block hello"}]}
+    assert conversation_key("openai_chat", body) == conversation_key(
+        "openai_chat", {"messages": [{"role": "user", "content": "block hello"}]}
+    )
+
+
+def _claude_code_body(session_id: str, text: str) -> dict:
+    """A Messages API body shaped like real Claude Code traffic: the session id
+    rides in metadata.user_id as a JSON-encoded string."""
+    return {
+        "metadata": {
+            "user_id": json.dumps(
+                {"device_id": "d" * 8, "account_uuid": "a" * 8, "session_id": session_id}
+            )
+        },
+        "messages": [{"role": "user", "content": text}],
+    }
+
+
+def test_conversation_key_anthropic_prefers_metadata_session_id() -> None:
+    """Claude Code sends its transcript session id in metadata.user_id (verified
+    against real traffic); it must win over the first-message-hash fallback and
+    stay stable as history grows."""
+    k1 = conversation_key("anthropic", _claude_code_body("sess-1", "hello"))
+    k2 = conversation_key("anthropic", _claude_code_body("sess-1", "a different opening"))
+    assert k1 == "sess-1"
+    assert k1 == k2
+
+
+def test_conversation_key_anthropic_new_session_id_after_clear() -> None:
+    """/clear starts a new session id → new conversation, even when the visible
+    opening text (injected reminders, re-typed prompt) is identical."""
+    before = conversation_key("anthropic", _claude_code_body("sess-1", "hi"))
+    after = conversation_key("anthropic", _claude_code_body("sess-2", "hi"))
+    assert before != after
+
+
+def test_conversation_key_anthropic_legacy_session_id_format() -> None:
+    """Older Claude Code sent metadata.user_id as a plain string ending in
+    _session_<uuid>; the uuid is still extracted."""
+    body = {
+        "metadata": {
+            "user_id": "user_ab12_account_cd34_session_123e4567-e89b-12d3-a456-426614174000"
+        },
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    assert conversation_key("anthropic", body) == "123e4567-e89b-12d3-a456-426614174000"
+
+
+def test_conversation_key_anthropic_none_without_session_id() -> None:
+    """The anthropic wire never falls back to first-message hashing: a shared
+    opening prompt (or /clear's near-constant injected preamble) would merge
+    unrelated conversations, and ungrouped beats wrongly grouped. A stable
+    per-user metadata.user_id (the documented API meaning) must not be used
+    either — it would merge all of a user's conversations."""
+    bare = {"messages": [{"role": "user", "content": "hi"}]}
+    plain = {"metadata": {"user_id": "customer-42"}, **bare}
+    no_session = {"metadata": {"user_id": json.dumps({"device_id": "d1"})}, **bare}
+    assert conversation_key("anthropic", bare) is None
+    assert conversation_key("anthropic", plain) is None
+    assert conversation_key("anthropic", no_session) is None
+
+
+def test_conversation_key_fallback_skips_injected_blocks() -> None:
+    """The OpenAI hash fallback must key on the first *typed* text: a session
+    that opens with harness-injected wrappers (near-constant per project)
+    would otherwise collapse every such session into one conversation."""
+    def injected_body(prompt: str) -> dict:
+        return {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "<user_instructions>project instructions</user_instructions>",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<environment_context>cwd, sandbox</environment_context>"},
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ]
+        }
+
+    typed_only = {"messages": [{"role": "user", "content": "fix the bug"}]}
+    assert conversation_key("openai_chat", injected_body("fix the bug")) == conversation_key(
+        "openai_chat", typed_only
+    )
+    assert conversation_key("openai_chat", injected_body("topic A")) != conversation_key(
+        "openai_chat", injected_body("topic B")
     )
 
 
