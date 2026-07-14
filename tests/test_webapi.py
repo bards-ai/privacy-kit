@@ -3,6 +3,7 @@ temp store."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,52 @@ def test_summary_has_breakdowns_and_timeseries(tmp_path: Path) -> None:
     assert data["tokens"] == {"input": 15, "output": 27}
     assert len(data["timeseries"]) >= 1
     assert sum(p["interactions"] for p in data["timeseries"]) == 2
+
+
+def seed_dated(store: AuditStore) -> None:
+    store.record(
+        source="claude-code",
+        wire_format="anthropic",
+        model="claude-opus-4-8",
+        policy="monitor",
+        entity_counts={"PERSON_NAME": 2, "EMAIL_ADDRESS": 1},
+        input_tokens=10,
+        output_tokens=20,
+        created_at=datetime(2026, 1, 5, 12, 0),
+    )
+    store.record(
+        source="codex",
+        wire_format="openai_responses",
+        model="gpt-5",
+        policy="pseudonymize",
+        entity_counts={"EMAIL_ADDRESS": 1},
+        input_tokens=5,
+        output_tokens=7,
+        created_at=datetime(2026, 3, 10, 12, 0),
+    )
+
+
+def test_summary_respects_date_range(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    seed_dated(store)
+    data = client.get(
+        "/api/v1/summary", params={"date_from": "2026-03-01", "date_to": "2026-03-31"}
+    ).json()
+    assert data["interactions"] == 1
+    assert data["by_source"] == {"codex": 1}
+    assert data["entities_total"] == 1
+    assert data["entities_by_type"] == {"EMAIL_ADDRESS": 1}
+    assert data["tokens"] == {"input": 5, "output": 7}
+    assert [p["date"] for p in data["timeseries"]] == ["2026-03-10"]
+
+
+def test_summary_without_dates_and_invalid_dates_returns_all_time(tmp_path: Path) -> None:
+    client, store = build(tmp_path)
+    seed_dated(store)
+    all_time = client.get("/api/v1/summary").json()
+    assert all_time["interactions"] == 2
+    assert all_time["tokens"] == {"input": 15, "output": 27}
+    assert client.get("/api/v1/summary", params={"date_from": "garbage"}).json() == all_time
 
 
 def test_filters_lists_distinct_values(tmp_path: Path) -> None:

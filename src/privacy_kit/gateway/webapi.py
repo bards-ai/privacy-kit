@@ -164,8 +164,10 @@ def register_webapi_routes(
     cfg = settings
 
     @app.get("/api/v1/summary")
-    async def api_summary() -> JSONResponse:
-        return JSONResponse(store.dashboard_summary())
+    async def api_summary(date_from: str | None = None, date_to: str | None = None) -> JSONResponse:
+        return JSONResponse(
+            store.dashboard_summary(date_from=_parse_dt(date_from), date_to=_parse_dt(date_to))
+        )
 
     @app.get("/api/v1/filters")
     async def api_filters() -> JSONResponse:
