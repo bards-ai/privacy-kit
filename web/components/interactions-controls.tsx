@@ -1,8 +1,11 @@
 "use client";
 
-import { Download, RotateCcw, Search } from "lucide-react";
+import "react-day-picker/style.css";
+
+import { CalendarDays, Download, RotateCcw, Search } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { DayPicker } from "react-day-picker";
 
 import { Button } from "@/components/button";
 import { cn } from "@/lib/cn";
@@ -115,6 +118,151 @@ export function FilterBar({ filters }: { filters: FilterValues }) {
           <RotateCcw className="h-4 w-4" /> Reset
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+const MIN_YEAR = new Date().getFullYear() - 6;
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+function formatEu(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return match ? `${match[3]}.${match[2]}.${match[1]}` : "";
+}
+
+function parseParam(value: string): Date | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : undefined;
+}
+
+function toParam(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+const CALENDAR_VARS = {
+  "--rdp-accent-color": "hsl(var(--primary))",
+  "--rdp-accent-background-color": "hsl(var(--accent))",
+  "--rdp-today-color": "hsl(var(--primary))",
+  "--rdp-day-width": "2.1rem",
+  "--rdp-day-height": "2.1rem",
+  "--rdp-day_button-width": "2rem",
+  "--rdp-day_button-height": "2rem",
+  "--rdp-nav-height": "2rem",
+} as CSSProperties;
+
+function CalendarPopup({ value, onPick }: { value: string; onPick: (value: string) => void }) {
+  const selected = parseParam(value);
+  return (
+    <div
+      className="absolute left-0 top-full z-20 mt-1 rounded-md border bg-background p-3 text-sm shadow-md"
+      style={CALENDAR_VARS}
+    >
+      <DayPicker
+        mode="single"
+        selected={selected}
+        onSelect={(d) => onPick(d ? toParam(d) : "")}
+        defaultMonth={selected}
+        weekStartsOn={1}
+        captionLayout="dropdown"
+        reverseYears
+        startMonth={new Date(MIN_YEAR, 0)}
+        endMonth={new Date()}
+      />
+    </div>
+  );
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="w-9 text-xs text-muted-foreground">{label}</span>
+      <div ref={ref} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className={cn(inputClass, "flex w-36 items-center justify-between gap-2 text-left")}
+          aria-label={`${label} date`}
+        >
+          <span className={value ? undefined : "text-muted-foreground"}>
+            {value ? formatEu(value) : "dd.mm.yyyy"}
+          </span>
+          <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </button>
+        {open ? (
+          <CalendarPopup
+            value={value}
+            onPick={(v) => {
+              onChange(v);
+              setOpen(false);
+            }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function DateRangeFilter() {
+  const searchParams = useSearchParams();
+  const setParams = useSetParams();
+  const fromParam = searchParams.get("date_from");
+  const toParam = searchParams.get("date_to");
+  const [from, setFrom] = useState(fromParam ?? "");
+  const [to, setTo] = useState(toParam ?? "");
+  useEffect(() => {
+    setFrom(fromParam ?? "");
+    setTo(toParam ?? "");
+  }, [fromParam, toParam]);
+
+  const dirty = (from || null) !== fromParam || (to || null) !== toParam;
+  const hasAnything = Boolean(fromParam || toParam || from || to);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <DateField label="From" value={from} onChange={setFrom} />
+      <DateField label="To" value={to} onChange={setTo} />
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          disabled={!dirty}
+          onClick={() => setParams({ date_from: from || null, date_to: to || null })}
+        >
+          Apply
+        </Button>
+        {hasAnything ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setFrom("");
+              setTo("");
+              setParams({ date_from: null, date_to: null });
+            }}
+          >
+            <RotateCcw className="h-4 w-4" /> Reset
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

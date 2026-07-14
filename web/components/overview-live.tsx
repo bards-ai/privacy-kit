@@ -3,9 +3,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, Cpu, Database, Download, Hash, ShieldAlert } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import { ActivityAreaChart, EntityBarChart, SourcePie } from "@/components/charts";
 import { EntityChips } from "@/components/entity-chips";
+import { DateRangeFilter } from "@/components/interactions-controls";
 import { PolicyBadge } from "@/components/policy-badge";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle, EmptyState } from "@/components/ui";
@@ -23,20 +25,40 @@ export function OverviewLive({
   initialSummary: Summary;
   initialRecent: InteractionList;
 }) {
+  const searchParams = useSearchParams();
+  const qs = new URLSearchParams();
+  for (const k of ["date_from", "date_to"] as const) {
+    const v = searchParams.get(k);
+    if (v) qs.set(k, v);
+  }
+  const query = qs.toString();
+
   const { data: summary } = useQuery({
-    queryKey: ["summary"],
-    queryFn: () => clientGet<Summary>("/summary"),
+    queryKey: ["summary", query],
+    queryFn: () => clientGet<Summary>(`/summary${query ? `?${query}` : ""}`),
     initialData: initialSummary,
     refetchInterval: 5000,
   });
   const { data: recent } = useQuery({
-    queryKey: ["interactions", "recent"],
-    queryFn: () => clientGet<InteractionList>(RECENT_PATH),
+    queryKey: ["interactions", "recent", query],
+    queryFn: () => clientGet<InteractionList>(`${RECENT_PATH}${query ? `&${query}` : ""}`),
     initialData: initialRecent,
     refetchInterval: 5000,
   });
 
   if (summary.interactions === 0) {
+    if (query) {
+      return (
+        <div className="space-y-4">
+          <DateRangeFilter />
+          <EmptyState
+            icon={<Activity className="h-8 w-8" />}
+            title="No interactions in this range"
+            description="Nothing was recorded between the selected dates. Widen the range or reset the filter to see all activity."
+          />
+        </div>
+      );
+    }
     return (
       <div className="space-y-4">
         <div className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
@@ -69,6 +91,7 @@ export function OverviewLive({
 
   return (
     <div className="space-y-6">
+      <DateRangeFilter />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Interactions"

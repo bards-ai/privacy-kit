@@ -627,28 +627,34 @@ class AuditStore:
             "entity_types": sorted(v for v in entity_types if v),
         }
 
-    def dashboard_summary(self) -> dict[str, Any]:
+    def dashboard_summary(
+        self, *, date_from: datetime | None = None, date_to: datetime | None = None
+    ) -> dict[str, Any]:
         """Rich aggregates for the overview page: totals, breakdowns, time series."""
         day = func.strftime("%Y-%m-%d", col(Interaction.created_at))
+        conds = self._conditions(date_from=date_from, date_to=date_to)
         with Session(self.engine) as session:
-            interactions = int(session.exec(select(func.count()).select_from(Interaction)).one())
+            interactions = int(
+                session.exec(select(func.count()).select_from(Interaction).where(*conds)).one()
+            )
             by_type = {
                 etype: int(total)
                 for etype, total in session.exec(
-                    select(Detection.entity_type, func.sum(Detection.count)).group_by(
-                        Detection.entity_type
-                    )
+                    select(Detection.entity_type, func.sum(Detection.count))
+                    .join(Interaction, col(Detection.interaction_id) == col(Interaction.id))
+                    .where(*conds)
+                    .group_by(Detection.entity_type)
                 ).all()
             }
-            by_source = self._group_count(session, Interaction.source)
-            by_wire_format = self._group_count(session, Interaction.wire_format)
-            by_policy = self._group_count(session, Interaction.policy)
-            by_model = self._group_count(session, Interaction.model)
+            by_source = self._group_count(session, Interaction.source, conds)
+            by_wire_format = self._group_count(session, Interaction.wire_format, conds)
+            by_policy = self._group_count(session, Interaction.policy, conds)
+            by_model = self._group_count(session, Interaction.model, conds)
             tokens_in = session.exec(
-                select(func.coalesce(func.sum(col(Interaction.input_tokens)), 0))
+                select(func.coalesce(func.sum(col(Interaction.input_tokens)), 0)).where(*conds)
             ).one()
             tokens_out = session.exec(
-                select(func.coalesce(func.sum(col(Interaction.output_tokens)), 0))
+                select(func.coalesce(func.sum(col(Interaction.output_tokens)), 0)).where(*conds)
             ).one()
             series_rows = session.exec(
                 select(
@@ -656,6 +662,7 @@ class AuditStore:
                     func.count(),
                     func.coalesce(func.sum(col(Interaction.entity_total)), 0),
                 )
+                .where(*conds)
                 .group_by(day)
                 .order_by(day)
             ).all()
@@ -676,8 +683,10 @@ class AuditStore:
         }
 
     @staticmethod
-    def _group_count(session: Session, column: Any) -> dict[str, int]:
-        rows = session.exec(select(column, func.count()).group_by(column)).all()
+    def _group_count(
+        session: Session, column: Any, conds: Sequence[ColumnElement[bool]] = ()
+    ) -> dict[str, int]:
+        rows = session.exec(select(column, func.count()).where(*conds).group_by(column)).all()
         return {str(value): int(n) for value, n in rows if value is not None}
 
     # --- Management (used by the dashboard's write actions) ----------------

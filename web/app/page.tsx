@@ -18,10 +18,23 @@ const EMPTY_SUMMARY: Summary = {
 };
 const EMPTY_LIST: InteractionList = { items: [], page: 1, page_size: 8, total: 0, total_pages: 0 };
 
-export default async function OverviewPage() {
-  const { data: summary, error } = await apiGetOr<Summary>("/summary", EMPTY_SUMMARY);
+export default async function OverviewPage({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | string[] | undefined };
+}) {
+  const qs = new URLSearchParams();
+  for (const k of ["date_from", "date_to"] as const) {
+    const v = searchParams[k];
+    if (typeof v === "string" && v !== "") qs.set(k, v);
+  }
+  const query = qs.toString();
+  const { data: summary, error } = await apiGetOr<Summary>(
+    `/summary${query ? `?${query}` : ""}`,
+    EMPTY_SUMMARY,
+  );
   const { data: recent } = await apiGetOr<InteractionList>(
-    "/interactions?page_size=8&sort=created_at&order=desc",
+    `/interactions?page_size=8&sort=created_at&order=desc${query ? `&${query}` : ""}`,
     EMPTY_LIST,
   );
 
